@@ -1,0 +1,115 @@
+{{- $o := .Values.oauth2Proxy }}
+{{- $n := include "app.proxy" . }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $n }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  client-secret: {{ .Values.client.secret | quote }}
+  cookie-secret: {{ $o.cookieSecret | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+data:
+  oauth2-proxy.cfg: |
+    http_address = "0.0.0.0:4180"
+    reverse_proxy = true
+    proxy_prefix = "{{ trimSuffix "/" .Values.path }}/oauth2"
+    provider = "oidc"
+    provider_display_name = "Keycloak"
+    client_id = {{ .Values.client.id | quote }}
+    # browser-facing URLs use the public Keycloak URL; token/JWKS calls go pod-to-pod
+    oidc_issuer_url = {{ include "app.issuer" . | quote }}
+    skip_oidc_discovery = true
+    login_url  = "{{ include "app.issuer" . }}/protocol/openid-connect/auth"
+    redeem_url = "{{ include "app.issuerInternal" . }}/protocol/openid-connect/token"
+    oidc_jwks_url = "{{ include "app.issuerInternal" . }}/protocol/openid-connect/certs"
+    profile_url = "{{ include "app.issuerInternal" . }}/protocol/openid-connect/userinfo"
+    redirect_url = {{ include "app.callback" . | quote }}
+    code_challenge_method = "S256"
+    scope = "openid email profile"
+    email_domains = {{ toJson $o.emailDomains }}
+    {{- if $o.allowedGroups }}
+    allowed_groups = {{ toJson $o.allowedGroups }}
+    {{- end }}
+    oidc_groups_claim = "groups"
+    skip_provider_button = true
+    cookie_name = {{ $o.cookieName | quote }}
+    cookie_secure = {{ ternary "true" "false" $o.cookieSecure }}
+    cookie_samesite = "lax"
+    cookie_expire = "8h"
+    cookie_refresh = "5m"
+    {{- if ne .Values.path "/" }}
+    cookie_path = {{ .Values.path | quote }}
+    {{- end }}
+    set_xauthrequest = true
+    pass_access_token = false
+    pass_user_headers = true
+    skip_auth_routes = [ "^{{ trimSuffix "/" .Values.path }}/healthz$" ]
+    whitelist_domains = [ {{ (trimPrefix "https://" (trimPrefix "http://" .Values.publicUrl)) | quote }} ]
+    upstreams = [ "http://{{ include "app.web" . }}.{{ .Release.Namespace }}.svc.cluster.local:80{{ .Values.path }}" ]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $n }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $n }}
+  labels:
+    app: {{ $n }}
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $o.replicas }}
+  selector:
+    matchLabels: { app: {{ $n }} }
+  template:
+    metadata:
+      labels: { app: {{ $n }}, version: v1 }
+      annotations:
+        checksum/config: {{ (print (toJson $o) .Values.client.secret .Values.publicUrl .Values.path (toJson .Values.keycloak)) | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: {{ $n }}
+      securityContext: { runAsNonRoot: true, runAsUser: 2000 }
+      containers:
+        - name: oauth2-proxy
+          image: {{ $o.image | quote }}
+          args: ["--config=/etc/oauth2-proxy/oauth2-proxy.cfg"]
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ $n }}, key: client-secret } }
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: { secretKeyRef: { name: {{ $n }}, key: cookie-secret } }
+          ports: [{ name: http, containerPort: 4180 }]
+          readinessProbe: { httpGet: { path: /ping, port: http }, periodSeconds: 5 }
+          livenessProbe:  { httpGet: { path: /ping, port: http }, periodSeconds: 20 }
+          resources:
+            {{- toYaml $o.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/oauth2-proxy, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: {{ $n }} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}
+  labels:
+    app: {{ $n }}
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  selector: { app: {{ $n }} }
+  ports:
+    - { name: http, port: 4180, targetPort: http }

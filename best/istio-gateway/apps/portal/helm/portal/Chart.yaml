@@ -1,0 +1,8 @@
+apiVersion: v2
+name: portal
+description: >-
+  Developer Workspaces portal: Python web app + stub API behind oauth2-proxy, protected by the platform's Keycloak.
+  Registers its own OIDC client in Keycloak on install (and removes it on uninstall). Template for further apps.
+type: application
+version: 0.2.0
+appVersion: "1.0"

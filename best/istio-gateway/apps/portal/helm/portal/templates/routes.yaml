@@ -1,0 +1,43 @@
+{{- $p := include "app.proxy" . }}
+{{- if eq .Values.routeKind "httproute" }}
+# Everything under `path` goes to oauth2-proxy, which enforces login and forwards to the app.
+# (Keycloak's /auth route belongs to the keycloak chart; longest path match wins on the Gateway.)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "app.name" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "app.gwName" . }}
+      namespace: {{ include "app.gwNs" . }}
+  {{- with .Values.hostname }}
+  hostnames: [{{ . | quote }}]
+  {{- end }}
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: {{ .Values.path | quote }} }
+      backendRefs:
+        - name: {{ $p }}
+          port: 4180
+{{- else }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "app.name" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ default "*" .Values.hostname | quote }}
+  gateways:
+    - {{ .Values.gateway }}
+  http:
+    - name: {{ include "app.name" . }}
+      match:
+        - uri: { prefix: {{ .Values.path | quote }} }
+      route:
+        - destination: { host: {{ $p }}.{{ .Release.Namespace }}.svc.cluster.local, port: { number: 4180 } }
+      timeout: 60s
+{{- end }}

@@ -1,0 +1,12 @@
+Keycloak — release {{ .Release.Name }} in {{ .Release.Namespace }}
+
+  Admin console:  {{ include "kc.url" . }}/admin/        ({{ .Values.admin.username }} / Secret keycloak-admin)
+  Realm:          {{ include "kc.url" . }}/realms/{{ .Values.realm.name }}
+  OIDC discovery: {{ include "kc.url" . }}/realms/{{ .Values.realm.name }}/.well-known/openid-configuration
+  SAML metadata:  {{ include "kc.url" . }}/realms/{{ .Values.realm.name }}/protocol/saml/descriptor
+  In-cluster URL: {{ include "kc.internalUrl" . }}      (apps use this for token/JWKS calls)
+  Database:       {{ include "kc.jdbc" . }}
+
+  Users: {{ range $i, $u := .Values.realm.users }}{{ if $i }}, {{ end }}{{ $u.username }} ({{ join "," $u.groups }}){{ end }}
+
+  Apps register their own OIDC clients against this realm — see apps/portal/install.sh.

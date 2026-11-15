@@ -1,0 +1,9 @@
+apiVersion: v2
+name: keycloak
+description: >-
+  Keycloak (production `start` mode) backed by PostgreSQL, published under <publicUrl>/auth through the Istio
+  gateway (HTTPRoute or VirtualService). Imports a realm with groups, users and a SAML client on first start.
+  Applications register their own OIDC clients afterwards (see apps/portal).
+type: application
+version: 0.2.0
+appVersion: "26.0"

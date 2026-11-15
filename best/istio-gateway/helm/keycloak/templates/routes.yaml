@@ -1,0 +1,41 @@
+{{- if eq .Values.routeKind "httproute" }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  labels:
+    {{- include "kc.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "kc.gwName" . }}
+      namespace: {{ include "kc.gwNs" . }}
+  {{- with .Values.hostname }}
+  hostnames: [{{ . | quote }}]
+  {{- end }}
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: {{ .Values.relativePath | quote }} }
+      backendRefs:
+        - name: keycloak
+          port: 8080
+{{- else }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: keycloak
+  labels:
+    {{- include "kc.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ default "*" .Values.hostname | quote }}
+  gateways:
+    - {{ .Values.gateway }}
+  http:
+    - name: keycloak
+      match:
+        - uri: { prefix: {{ printf "%s/" .Values.relativePath | quote }} }
+        - uri: { exact: {{ .Values.relativePath | quote }} }
+      route:
+        - destination: { host: keycloak.{{ .Release.Namespace }}.svc.cluster.local, port: { number: 8080 } }
+      timeout: 60s
+{{- end }}

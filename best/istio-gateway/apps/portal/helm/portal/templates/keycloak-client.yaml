@@ -1,0 +1,117 @@
+{{- if .Values.client.registerJob }}
+{{- $kc := .Values.keycloak }}
+# Registers this app's OIDC client in the platform Keycloak (idempotent: create or update), and deletes it on
+# helm uninstall. Uses kcadm from the Keycloak image and the admin Secret the keycloak chart created.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "app.name" . }}-client
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  client-id: {{ .Values.client.id | quote }}
+  client-secret: {{ .Values.client.secret | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "app.name" . }}-client-register
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+data:
+  register.sh: |
+    #!/bin/bash
+    set -e
+    KCADM=/opt/keycloak/bin/kcadm.sh
+    REALM={{ $kc.realm | quote }}
+    for i in $(seq 1 90); do
+      $KCADM config credentials --server "$KC_URL" --realm master --user "$KC_USER" --password "$KC_PASS" 2>/dev/null && break
+      echo "waiting for keycloak at $KC_URL ($i)…"; sleep 5
+    done
+    $KCADM get realms/$REALM >/dev/null || { echo "realm $REALM does not exist — install the platform keycloak first"; exit 1; }
+    cat > /tmp/client.json <<EOF
+    {
+      "clientId": "$CLIENT_ID",
+      "name": "{{ .Release.Name }} (oauth2-proxy)",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$CLIENT_SECRET",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "rootUrl": "{{ .Values.publicUrl }}",
+      "redirectUris": ["{{ include "app.callback" . }}"],
+      "webOrigins": ["{{ .Values.publicUrl }}"],
+      "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "{{ .Values.publicUrl }}/*" },
+      "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins"]
+    }
+    EOF
+    ID=$($KCADM get clients -r $REALM -q clientId=$CLIENT_ID --fields id --format csv --noquotes 2>/dev/null | head -1)
+    if [ -z "$ID" ]; then
+      $KCADM create clients -r $REALM -f /tmp/client.json
+      ID=$($KCADM get clients -r $REALM -q clientId=$CLIENT_ID --fields id --format csv --noquotes | head -1)
+      echo "created client $CLIENT_ID ($ID)"
+    else
+      $KCADM update clients/$ID -r $REALM -f /tmp/client.json
+      echo "updated client $CLIENT_ID ($ID)"
+    fi
+    # group membership + realm roles in the tokens (idempotent: only add if missing)
+    HAVE=$($KCADM get clients/$ID/protocol-mappers/models -r $REALM --fields name --format csv --noquotes 2>/dev/null || true)
+    echo "$HAVE" | grep -qx groups || $KCADM create clients/$ID/protocol-mappers/models -r $REALM \
+      -s name=groups -s protocol=openid-connect -s protocolMapper=oidc-group-membership-mapper \
+      -s 'config."claim.name"=groups' -s 'config."full.path"=false' -s 'config."id.token.claim"=true' -s 'config."access.token.claim"=true' -s 'config."userinfo.token.claim"=true'
+    echo "$HAVE" | grep -qx "realm roles" || $KCADM create clients/$ID/protocol-mappers/models -r $REALM \
+      -s "name=realm roles" -s protocol=openid-connect -s protocolMapper=oidc-usermodel-realm-role-mapper \
+      -s 'config."claim.name"=roles' -s 'config."jsonType.label"=String' -s 'config."multivalued"=true' -s 'config."id.token.claim"=true' -s 'config."access.token.claim"=true' -s 'config."userinfo.token.claim"=true'
+    echo "client $CLIENT_ID ready: redirect {{ include "app.callback" . }}"
+  unregister.sh: |
+    #!/bin/bash
+    KCADM=/opt/keycloak/bin/kcadm.sh
+    $KCADM config credentials --server "$KC_URL" --realm master --user "$KC_USER" --password "$KC_PASS" || { echo "keycloak unreachable; nothing to clean"; exit 0; }
+    ID=$($KCADM get clients -r {{ $kc.realm }} -q clientId=$CLIENT_ID --fields id --format csv --noquotes 2>/dev/null | head -1)
+    [ -n "$ID" ] && $KCADM delete clients/$ID -r {{ $kc.realm }} && echo "deleted client $CLIENT_ID" || echo "client $CLIENT_ID not present"
+---
+{{- range $phase := list "register" "unregister" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "app.name" $ }}-client-{{ $phase }}
+  labels:
+    {{- include "app.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ ternary "post-install,post-upgrade" "pre-delete" (eq $phase "register") | quote }}
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "0"
+spec:
+  backoffLimit: {{ ternary 30 2 (eq $phase "register") }}
+  template:
+    metadata:
+      labels: { app: {{ include "app.name" $ }}-client-{{ $phase }} }
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kcadm
+          image: {{ $kc.image | quote }}
+          command: ["/bin/bash", "/scripts/{{ $phase }}.sh"]
+          env:
+            - { name: KC_URL, value: {{ $kc.internalUrl | quote }} }
+            - name: KC_USER
+              valueFrom: { secretKeyRef: { name: {{ $kc.adminSecret }}, key: username } }
+            - name: KC_PASS
+              valueFrom: { secretKeyRef: { name: {{ $kc.adminSecret }}, key: password } }
+            - name: CLIENT_ID
+              valueFrom: { secretKeyRef: { name: {{ include "app.name" $ }}-client, key: client-id } }
+            - name: CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "app.name" $ }}-client, key: client-secret } }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - name: scripts
+          configMap: { name: {{ include "app.name" $ }}-client-register, defaultMode: 0755 }
+---
+{{- end }}
+{{- end }}

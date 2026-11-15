@@ -1,0 +1,85 @@
+{{- $web := include "app.web" . }}
+{{- $proxy := include "app.proxy" . }}
+{{- if .Values.policies.networkPolicy }}
+# Works on any cluster with a network-policy engine: the app pods accept traffic only from this release's oauth2-proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $web }}-only-from-oauth2-proxy
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: {{ $web }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: {{ $proxy }} }
+      ports:
+        - { port: 8080, protocol: TCP }
+{{- end }}
+{{- $hasSec := .Capabilities.APIVersions.Has "security.istio.io/v1/PeerAuthentication" }}
+{{- $hasNet := .Capabilities.APIVersions.Has "networking.istio.io/v1/VirtualService" }}
+{{- if and .Values.policies.istio $hasSec }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ $web }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: {{ $web }} }
+  mtls: { mode: STRICT }
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $web }}-only-via-oauth2-proxy
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: {{ $web }} }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/{{ .Release.Namespace }}/sa/{{ $proxy }}"]
+{{- end }}
+{{- if and .Values.policies.istio $hasNet }}
+---
+# mesh-side traffic control for oauth2-proxy -> app: timeouts, retries, outlier detection, canary subset hook
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ $web }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ $web }}.{{ .Release.Namespace }}.svc.cluster.local
+  http:
+    - route:
+        - destination: { host: {{ $web }}.{{ .Release.Namespace }}.svc.cluster.local, subset: v1 }
+          weight: 100
+      timeout: 15s
+      retries: { attempts: 2, perTryTimeout: 5s, retryOn: "connect-failure,refused-stream,503" }
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ $web }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  host: {{ $web }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    tls: { mode: ISTIO_MUTUAL }
+    outlierDetection: { consecutive5xxErrors: 5, interval: 10s, baseEjectionTime: 30s }
+  subsets:
+    - name: v1
+      labels: { version: v1 }
+{{- end }}

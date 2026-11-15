@@ -1,0 +1,80 @@
+{{- $pg := .Values.postgres }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-postgres
+  labels:
+    {{- include "kc.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ $pg.username | quote }}
+  password: {{ $pg.password | quote }}
+  database: {{ $pg.database | quote }}
+  jdbcUrl: {{ include "kc.jdbc" . | quote }}
+{{- if $pg.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-postgres
+  labels:
+    app: keycloak-postgres
+    {{- include "kc.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector: { app: keycloak-postgres }
+  ports:
+    - { name: tcp-postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak-postgres
+  labels:
+    app: keycloak-postgres
+    {{- include "kc.labels" . | nindent 4 }}
+spec:
+  serviceName: keycloak-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: keycloak-postgres }
+  template:
+    metadata:
+      labels: { app: keycloak-postgres }
+    spec:
+      securityContext: { fsGroup: 70 }           # postgres uid/gid in the alpine image
+      containers:
+        - name: postgres
+          image: {{ $pg.image | quote }}
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { secretKeyRef: { name: keycloak-postgres, key: database } }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: keycloak-postgres, key: username } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-postgres, key: password } }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports: [{ name: tcp-postgres, containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            periodSeconds: 20
+          resources:
+            {{- toYaml $pg.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $pg.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $pg.storage }}
+{{- end }}

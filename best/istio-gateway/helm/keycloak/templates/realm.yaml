@@ -1,0 +1,65 @@
+{{- $r := .Values.realm }}
+# Imported on first start (--import-realm). Application OIDC clients are NOT here: each app registers its own.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-realm
+  labels:
+    {{- include "kc.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  {{ $r.name }}-realm.json: |
+    {
+      "realm": {{ $r.name | quote }},
+      "displayName": {{ $r.displayName | quote }},
+      "enabled": true,
+      "sslRequired": {{ ternary "external" "none" (hasPrefix "https://" .Values.publicUrl) | quote }},
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "bruteForceProtected": true,
+      "roles": { "realm": [
+        {{- range $i, $role := $r.roles }}{{ if $i }},{{ end }} { "name": {{ $role | quote }} }{{ end }}
+      ] },
+      "groups": [
+        {{- range $i, $g := $r.groups }}{{ if $i }},{{ end }}
+        { "name": {{ $g | quote }}, "path": "/{{ $g }}" }
+        {{- end }}
+      ],
+      "users": [
+        {{- range $i, $u := $r.users }}{{ if $i }},{{ end }}
+        {
+          "username": {{ $u.username | quote }},
+          "enabled": true,
+          "email": {{ $u.email | quote }},
+          "emailVerified": true,
+          "firstName": {{ default "" $u.firstName | quote }},
+          "lastName": {{ default "" $u.lastName | quote }},
+          "credentials": [ { "type": "password", "value": {{ $u.password | quote }}, "temporary": false } ],
+          "realmRoles": [ {{- range $j, $role := $r.roles }}{{ if $j }}, {{ end }}{{ $role | quote }}{{ end }}, "default-roles-{{ $r.name }}" ],
+          "groups": [ {{- range $j, $g := $u.groups }}{{ if $j }}, {{ end }}"/{{ $g }}"{{ end }} ]
+        }
+        {{- end }}
+      ],
+      "clients": [
+        {{- if $r.samlClient.enabled }}
+        {
+          "clientId": {{ $r.samlClient.clientId | quote }},
+          "name": "SAML service provider (for apps that speak SAML)",
+          "protocol": "saml",
+          "enabled": true,
+          "rootUrl": {{ .Values.publicUrl | quote }},
+          "redirectUris": [ "{{ .Values.publicUrl }}/*" ],
+          "attributes": { "saml.assertion.signature": "true", "saml.server.signature": "true", "saml.client.signature": "false",
+                          "saml.force.post.binding": "true", "saml_name_id_format": "email", "saml.authnstatement": "true" },
+          "protocolMappers": [
+            { "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper",
+              "config": { "user.attribute": "email", "attribute.name": "email", "attribute.nameformat": "Basic", "friendly.name": "email" } },
+            { "name": "roles", "protocol": "saml", "protocolMapper": "saml-role-list-mapper",
+              "config": { "attribute.name": "Role", "attribute.nameformat": "Basic", "single": "true" } },
+            { "name": "groups", "protocol": "saml", "protocolMapper": "saml-group-membership-mapper",
+              "config": { "attribute.name": "groups", "attribute.nameformat": "Basic", "single": "true", "full.path": "false" } }
+          ]
+        }
+        {{- end }}
+      ]
+    }

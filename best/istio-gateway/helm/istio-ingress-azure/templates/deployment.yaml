@@ -1,0 +1,118 @@
+{{- if include "ig.deploy" . }}
+# Gateway injection: istiod fills in the Envoy container (image "auto") using its "gateway" template,
+# so the gateway always runs the proxy version of the installed control plane.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ig.name" . }}
+  labels:
+    {{- include "ig.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ig.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        inject.istio.io/templates: gateway
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "15020"
+        prometheus.io/path: /stats/prometheus
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "ig.labels" . | nindent 8 }}
+        sidecar.istio.io/inject: "true"
+        {{- if .Values.revision }}
+        istio.io/rev: {{ .Values.revision | quote }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ig.name" . }}
+      securityContext:
+        runAsUser: 1337
+        runAsGroup: 1337
+        runAsNonRoot: true
+        fsGroup: 1337
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start   # bind 80/443 without root
+            value: "0"
+      containers:
+        - name: istio-proxy
+          image: auto
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1337
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http-envoy-prom
+              containerPort: 15090
+              protocol: TCP
+          {{- with .Values.gateway.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+      {{- if .Values.gateway.topologySpreadAcrossZones }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "ig.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.gateway.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ig.name" . }}
+  labels:
+    {{- include "ig.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ig.name" . }}
+  minReplicas: {{ .Values.gateway.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.gateway.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.gateway.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if .Values.gateway.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ig.name" . }}
+  labels:
+    {{- include "ig.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.gateway.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "ig.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}

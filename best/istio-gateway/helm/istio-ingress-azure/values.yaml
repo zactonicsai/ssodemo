@@ -1,0 +1,103 @@
+# Istio ingress gateway on AKS.
+#   helm upgrade --install istio-ingress helm/istio-ingress-azure -n istio-ingress --create-namespace -f my-values.yaml
+# or:  scripts/deploy-istio-gateway.sh   (installs Istio if needed, then this chart, then waits for the IP)
+
+# aks-gateway-api : AKS managed Istio with Gateway API (istiod in aks-istio-system, GatewayClass approuting-istio).
+#                   This chart creates a gateway.networking.k8s.io Gateway; Istio provisions the gateway pods and the
+#                   Azure LB Service from it. Apps attach with HTTPRoutes. (scripts/deploy-istio-gateway.sh auto-detects this.)
+# aks-addon       : the classic AKS add-on (az aks mesh enable-ingress-gateway, revision asm-x-y). The add-on owns the
+#                   gateway pods + LB in aks-istio-ingress; this chart only creates the Istio Gateway resource.
+# selfmanaged     : Istio installed with helm/istioctl (istiod in istio-system). This chart deploys the gateway pods + LB.
+mode: aks-gateway-api
+
+# Istio revision label (canary/revisioned installs, or the add-on's asm-X-Y revision). "" = default revision.
+revision: ""
+
+gateway:
+  name: istio-ingressgateway        # Deployment / Service / ServiceAccount name
+  selectorLabel: ingressgateway     # pods get label istio=<selectorLabel>; the Gateway resource selects on it
+  replicas: 2                       # ignored when autoscaling.enabled
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "2",  memory: 1Gi }
+  nodeSelector: {}
+  tolerations: []
+  topologySpreadAcrossZones: true   # spread replicas over AKS availability zones
+  podAnnotations: {}
+  env: []                           # extra env for the proxy, e.g. - { name: ISTIO_META_IDLE_TIMEOUT, value: 300s }
+
+service:
+  type: LoadBalancer
+  # Local keeps the client IP and lets Azure LB health-probe each node for a ready gateway pod
+  # (Azure probes the healthCheckNodePort automatically). Use Cluster only if you understand the trade-off.
+  externalTrafficPolicy: Local
+  ports:
+    status: 15021                   # Envoy readiness, probed by Azure LB when azure.healthProbe.enabled
+    http:   80
+    https:  443
+  extraPorts: []                    # - { name: tcp-mqtt, port: 1883, targetPort: 1883, protocol: TCP }
+  # Restrict who can reach the LB (Azure programs the LB rules + the node NSG from this). Empty = everyone.
+  # e.g. ["203.0.113.7/32"] for one laptop; scripts/deploy-istio-gateway.sh --allow-my-ip fills in your current IP.
+  # selfmanaged: spec.loadBalancerSourceRanges · aks-gateway-api: annotation azure-allowed-ip-ranges
+  loadBalancerSourceRanges: []
+  extraAnnotations: {}
+
+azure:
+  internal: false                   # true = internal LB in the VNet instead of a public IP
+  internalSubnet: ""                # subnet name for the internal LB (optional)
+  # Static public IP. Create it first:  az network public-ip create -g <RG> -n <NAME> --sku Standard --allocation-method static
+  # If the IP's resource group is not the node resource group, set publicIPResourceGroup (the cluster identity
+  # needs "Network Contributor" on it).
+  publicIPName: ""
+  publicIPResourceGroup: ""
+  staticIP: ""                      # alternative to publicIPName: the literal address (sets spec.loadBalancerIP)
+  dnsLabel: ""                      # -> <dnsLabel>.<region>.cloudapp.azure.com on the public IP
+  healthProbe:
+    enabled: true                   # probe the gateway's readiness endpoint instead of a raw TCP check on 80/443
+    path: /healthz/ready
+  idleTimeoutMinutes: 0             # 0 = Azure default (4). Raise for long websockets/streams (max 30).
+
+# ---- mode: aks-gateway-api -----------------------------------------------------------------------------------------
+gatewayAPI:
+  name: default-gateway
+  gatewayClassName: approuting-istio      # from istiod env PILOT_GATEWAY_API_DEFAULT_GATEWAYCLASS_NAME
+  hosts: []                               # [] = any host; or ["myapp.example.com"] (listener hostname)
+  allowedRouteNamespaces: All             # All | Same | Selector (routes from any namespace may attach)
+  allowedRouteSelector: {}                # used when allowedRouteNamespaces=Selector, e.g. matchLabels: { gateway-access: "true" }
+  tls:
+    enabled: false
+    certificateRef: ingress-tls           # kubernetes.io/tls Secret in the release namespace
+    redirectHttp: false                   # creates an HTTPRoute on :80 that 301s to https
+  # Tuning of the pods Istio generates for this Gateway (Istio reads these from a ConfigMap via infrastructure.parametersRef).
+  infrastructure:
+    enabled: true
+    replicas: 2
+    autoscaling: { enabled: true, minReplicas: 2, maxReplicas: 5, targetCPUUtilizationPercentage: 80 }
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits:   { cpu: "2",  memory: 1Gi }
+
+# ---- modes: selfmanaged / aks-addon ---------------------------------------------------------------------------------
+# The Istio Gateway resource (networking.istio.io) — the listeners. Created in the release namespace unless
+# istioGateway.namespace is set (the add-on's gateway lives in aks-istio-ingress, so use that there).
+istioGateway:
+  enabled: true                           # ignored in mode aks-gateway-api
+  name: default-gateway
+  namespace: ""
+  hosts: ["*"]                      # hostnames this gateway serves; VirtualServices bind to <ns>/<name>
+  http:
+    enabled: true
+    redirectToHttps: false          # 301 http -> https (only when tls.enabled)
+  tls:
+    enabled: false
+    mode: SIMPLE                    # SIMPLE | MUTUAL | PASSTHROUGH
+    credentialName: ingress-tls     # kubernetes.io/tls Secret in the GATEWAY POD namespace (istio-ingress), not the app's
+    minProtocolVersion: TLSV1_2

@@ -1,0 +1,9 @@
+{{ .Release.Name }} — Developer Workspaces portal in {{ .Release.Namespace }}
+
+  Open:        {{ .Values.publicUrl }}{{ .Values.path }}      (login via Keycloak realm {{ .Values.keycloak.realm }})
+  API index:   {{ .Values.publicUrl }}{{ trimSuffix "/" .Values.path }}/api
+  OIDC client: {{ .Values.client.id }}  (registered by Job {{ include "app.name" . }}-client-register; removed on uninstall)
+
+  Pods:   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  Logs:   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "app.proxy" . }} -f
+  Test:   apps/portal/test.sh

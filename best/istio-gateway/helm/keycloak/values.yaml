@@ -1,0 +1,46 @@
+# scripts/install-platform.sh fills in publicUrl and the passwords; by hand:
+#   helm upgrade --install keycloak helm/keycloak -n demoweb --set publicUrl=http://20.1.2.3 --set admin.password=… --set postgres.password=…
+
+publicUrl: http://CHANGE-ME          # what browsers use to reach the gateway (no trailing slash)
+relativePath: /auth                  # Keycloak lives at <publicUrl>/auth
+
+# ---- how the /auth route binds to the gateway ---------------------------------------------------------------
+routeKind: httproute                 # httproute (Gateway API) | virtualservice (Istio API)
+gateway: demoweb/default-gateway     # <namespace>/<gateway name>
+hostname: ""                         # "" = any host
+
+image: quay.io/keycloak/keycloak:26.0.7
+replicas: 1                          # >1 needs KC_CACHE=ispn with a discovery setup; keep 1 for now
+admin:
+  username: admin
+  password: CHANGE-ME                # script generates it; stored in Secret keycloak-admin
+resources:
+  requests: { cpu: 250m, memory: 768Mi }
+  limits:   { cpu: "1",  memory: 1536Mi }
+
+postgres:
+  enabled: true                      # false = use an external DB via externalUrl
+  image: postgres:16-alpine
+  database: keycloak
+  username: keycloak
+  password: CHANGE-ME                # script generates it; stored in Secret keycloak-postgres
+  storage: 8Gi
+  storageClass: ""                   # "" = cluster default
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+  externalUrl: ""                    # e.g. jdbc:postgresql://pg.example.com:5432/keycloak (when enabled=false)
+
+# ---- the realm (imported on FIRST start; afterwards manage it in the admin console — the DB is the truth) ----
+realm:
+  name: demoweb
+  displayName: Demo Web SSO
+  groups: [developers, admins]       # realm groups; apps receive membership in the `groups` claim
+  roles: [web-user]
+  users:
+    - { username: demo, password: demo123,  email: demo@example.com, firstName: Demo,   lastName: User,      groups: [developers, admins] }
+    - { username: dev2, password: dev2pass, email: dev2@example.com, firstName: Second, lastName: Developer, groups: [developers] }
+  samlClient:                        # an IdP-side SAML client for apps that speak SAML themselves
+    enabled: true
+    clientId: demoweb-saml
+  reimportOnUpgrade: false           # true = OVERWRITE_EXISTING on every start (loses console changes; demo only)

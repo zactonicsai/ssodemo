@@ -1,0 +1,74 @@
+{{- $n := include "app.web" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $n }}-app
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+data:
+  app.py: |
+    {{- .Files.Get "files/web/app.py" | nindent 4 }}
+  index.html: |
+    {{- .Files.Get "files/web/index.html" | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $n }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $n }}
+  labels:
+    app: {{ $n }}
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: { app: {{ $n }} }
+  template:
+    metadata:
+      labels: { app: {{ $n }}, version: v1 }
+      annotations:
+        checksum/app: {{ (print (.Files.Get "files/web/app.py") (.Files.Get "files/web/index.html")) | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: {{ $n }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 }
+      containers:
+        - name: portal
+          image: {{ .Values.web.image | quote }}
+          command: ["python3", "-I", "/app/app.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: WEB_ROOT, value: /app }
+            - { name: BASE_PATH, value: {{ .Values.path | quote }} }
+            - { name: REQUIRE_AUTH, value: {{ ternary "1" "0" .Values.web.requireAuth | quote }} }
+            - { name: ADMIN_GROUP, value: {{ .Values.web.adminGroup | quote }} }
+            - { name: NAMESPACE_PREFIX, value: {{ .Values.web.namespacePrefix | quote }} }
+            - { name: LOGOUT_URL, value: {{ include "app.logoutUrl" . | quote }} }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          ports: [{ containerPort: 8080, name: http }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 5 }
+          livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 20 }
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            - { name: app, mountPath: /app, readOnly: true }
+      volumes:
+        - name: app
+          configMap: { name: {{ $n }}-app }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}
+  labels:
+    app: {{ $n }}
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  selector: { app: {{ $n }} }
+  ports:
+    - { name: http, port: 80, targetPort: 8080 }
