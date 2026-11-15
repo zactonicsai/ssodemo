@@ -1,0 +1,10 @@
+demoweb SSO — release {{ .Release.Name }} in {{ .Release.Namespace }}
+
+  Web (login required):   {{ .Values.publicUrl }}/
+  Keycloak admin console: {{ include "sso.kcUrl" . }}/admin/      ({{ .Values.keycloak.admin.username }} / see secret keycloak-admin)
+  Keycloak realm:         {{ include "sso.issuer" . }}
+  Demo user:              {{ .Values.keycloak.realm.user.username }} / see secret keycloak-realm
+
+  Watch it come up:   kubectl -n {{ .Release.Namespace }} get pods -w
+  oauth2-proxy logs:  kubectl -n {{ .Release.Namespace }} logs deploy/oauth2-proxy -f
+  Test:               scripts/test-sso.sh

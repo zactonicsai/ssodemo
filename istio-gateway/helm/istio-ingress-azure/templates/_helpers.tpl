@@ -59,6 +59,10 @@ service.beta.kubernetes.io/port_{{ .Values.service.ports.https }}_health-probe_p
 {{- if .Values.azure.idleTimeoutMinutes }}
 service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: {{ .Values.azure.idleTimeoutMinutes | quote }}
 {{- end }}
+{{- if and .Values.service.loadBalancerSourceRanges (eq .Values.mode "aks-gateway-api") }}
+{{- /* the generated Service has no spec we control, so restrict via the Azure annotation (LB rule + NSG) */}}
+service.beta.kubernetes.io/azure-allowed-ip-ranges: {{ join "," .Values.service.loadBalancerSourceRanges | quote }}
+{{- end }}
 {{- with .Values.service.extraAnnotations }}
 {{ toYaml . }}
 {{- end }}

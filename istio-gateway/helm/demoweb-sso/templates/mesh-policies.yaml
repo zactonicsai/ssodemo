@@ -1,0 +1,101 @@
+{{- $m := .Values.mesh }}
+{{- if $m.mtlsStrict }}
+# web and oauth2-proxy only accept mTLS from the mesh: nothing can reach them without an Istio identity.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: web
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: web }
+  mtls: { mode: STRICT }
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: oauth2-proxy
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: oauth2-proxy }
+  mtls: { mode: STRICT }
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: keycloak
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: keycloak }
+  mtls: { mode: PERMISSIVE }     # the post-install kcadm Job runs without a sidecar; mesh callers still use mTLS
+---
+{{- end }}
+{{- if $m.lockdownWeb }}
+# Pod access control: the web pods answer HTTP only to oauth2-proxy's identity (so nobody in the cluster or at
+# the gateway can bypass the login by calling the Service directly). Health checks come from the kubelet and
+# bypass the sidecar, so they are unaffected.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: web-only-via-oauth2-proxy
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app: web }
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/{{ .Release.Namespace }}/sa/oauth2-proxy"]
+---
+{{- end }}
+{{- if $m.virtualService.enabled }}
+# Mesh-side traffic control for the web service (what oauth2-proxy → web traffic obeys): timeouts, retries,
+# mTLS, and a hook for canaries (add a v2 subset and shift weight).
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: web
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - web.{{ .Release.Namespace }}.svc.cluster.local
+  http:
+    - route:
+        - destination:
+            host: web.{{ .Release.Namespace }}.svc.cluster.local
+            subset: v1
+          weight: 100
+      timeout: {{ $m.virtualService.timeout }}
+      retries:
+        attempts: {{ $m.virtualService.retries }}
+        perTryTimeout: 3s
+        retryOn: connect-failure,refused-stream,503
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: web
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  host: web.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    tls: { mode: ISTIO_MUTUAL }
+    connectionPool:
+      http: { http1MaxPendingRequests: 100, maxRequestsPerConnection: 10 }
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 30s
+  subsets:
+    - name: v1
+      labels: { version: v1 }
+{{- end }}

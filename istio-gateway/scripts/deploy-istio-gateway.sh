@@ -12,6 +12,8 @@
 #   --aks-addon    shorthand for --mode aks-addon
 #   --internal     internal (VNet) load balancer instead of a public IP
 #   --with-test    afterwards run scripts/test-gateway.sh (deploys nginx and curls through the LB)
+#   --allow-my-ip  only allow this laptop's current public IP (looked up via api.ipify.org) to reach the LB
+#   --allow-ip CIDR  allow this CIDR as well (repeatable). Without any --allow-*, the gateway is open to the internet.
 #   --set k=v      passed through to helm for the istio-ingress-azure chart (repeatable)
 #
 # Environment:
@@ -25,8 +27,9 @@
 #   AZ_RG=rg-aks AZ_CLUSTER=aks-prod scripts/deploy-istio-gateway.sh --aks-addon --with-test
 source "$(dirname "$0")/lib.sh"
 
-MODE=auto INTERNAL=0 WITH_TEST=0; EXTRA_SET=()
+MODE=auto INTERNAL=0 WITH_TEST=0 ALLOW_MY_IP=0; EXTRA_SET=(); ALLOW=()
 while [ $# -gt 0 ]; do case "$1" in
+  --allow-my-ip) ALLOW_MY_IP=1 ;; --allow-ip) ALLOW+=("$2"); shift ;;
   --mode) MODE="$2"; shift ;; --aks-addon) MODE=aks-addon ;; --internal) INTERNAL=1 ;; --with-test) WITH_TEST=1 ;; --yes|-y) YES=1 ;;
   --set) EXTRA_SET+=(--set "$2"); shift ;;
   -h|--help) sed -n '2,24p' "$0"; exit 0 ;; *) die "unknown flag $1" ;;
@@ -91,12 +94,23 @@ else
 fi
 
 # ---- 2. the gateway chart -----------------------------------------------------------------------
+if [ "$ALLOW_MY_IP" = 1 ]; then
+  MYIP="$(curl -4 -sf -m 5 https://api.ipify.org || curl -4 -sf -m 5 https://ifconfig.me/ip || true)"
+  [[ "$MYIP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not determine this machine's public IPv4 (pass --allow-ip x.x.x.x/32)"
+  ALLOW+=("$MYIP/32"); ok "this laptop's public IP: $MYIP"
+fi
+if [ -n "${ALLOW+x}" ] && [ "${#ALLOW[@]}" -gt 0 ]; then
+  i=0; for cidr in ${ALLOW[@]+"${ALLOW[@]}"}; do SET+=(--set "service.loadBalancerSourceRanges[$i]=$cidr"); i=$((i+1)); done
+  info "LB access restricted to: ${ALLOW[*]}"
+else
+  warn "no --allow-my-ip / --allow-ip: the gateway will be reachable from the whole internet"
+fi
 [ -n "$VALUES_FILE" ] && SET+=(-f "$VALUES_FILE")
-SET+=("${EXTRA_SET[@]}")
+SET+=(${EXTRA_SET[@]+"${EXTRA_SET[@]}"})
 info "helm lint"
-run helm lint "$ROOT/helm/istio-ingress-azure" "${SET[@]}" >/dev/null && ok "chart ok"
+run helm lint "$ROOT/helm/istio-ingress-azure" ${SET[@]+"${SET[@]}"} >/dev/null && ok "chart ok"
 info "helm upgrade --install $RELEASE -n $INGRESS_NS"
-run helm upgrade --install "$RELEASE" "$ROOT/helm/istio-ingress-azure" -n "$INGRESS_NS" --create-namespace "${SET[@]}" --wait --timeout 5m
+run helm upgrade --install "$RELEASE" "$ROOT/helm/istio-ingress-azure" -n "$INGRESS_NS" --create-namespace ${SET[@]+"${SET[@]}"} --wait --timeout 5m
 
 # ---- 3. wait for the Azure LB -------------------------------------------------------------------
 read -r SVC_NS SVC_NAME <<<"$(gateway_svc)"
@@ -140,6 +154,8 @@ info "done"
 echo "    mode:              $MODE"
 echo "    gateway resource:  $GW_NS/$GW_NAME     (attach apps with: $ATTACH)"
 echo "    LB service:        $SVC_NS/$SVC_NAME -> $IP"
+[ -n "${ALLOW+x}" ] && [ "${#ALLOW[@]}" -gt 0 ] && echo "    allowed sources:   ${ALLOW[*]}   (change: re-run with other --allow-* flags, or edit service.loadBalancerSourceRanges)"
+echo "    from this laptop:  curl -sI http://$IP/      (expect 'server: istio-envoy' once an app route exists; 404 before that is fine)"
 echo "    test it:           scripts/test-gateway.sh"
 [ "$WITH_TEST" = 1 ] && MODE="$MODE" exec "$ROOT/scripts/test-gateway.sh" --gateway "$GW_NS/$GW_NAME"
 exit 0

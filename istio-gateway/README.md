@@ -1,16 +1,31 @@
 # Istio ingress gateway on AKS
 
-Helm chart + scripts that put an Istio ingress gateway behind an Azure Load Balancer on the cluster
-your `kubectl` currently points at, and an nginx test app that proves traffic flows through it.
+Helm charts + scripts for the cluster your `kubectl` currently points at:
+
+1. an Istio ingress gateway behind an Azure Load Balancer (public, from any browser),
+2. an nginx test app that proves traffic flows through it,
+3. **SSO**: Keycloak + oauth2-proxy protecting the nginx web app (and any further services) in namespace `demoweb` —
+   see **[docs/SSO.md](docs/SSO.md)**.
+
+```bash
+az aks get-credentials -g <rg> -n <cluster>
+scripts/deploy-demoweb.sh        # gateway + Keycloak + login-protected nginx → prints URL + demo/demo123
+scripts/test-sso.sh              # verifies: redirect to login, login works, SSO cookie, bypass blocked
+```
 
 ```
 istio-gateway/
 ├── helm/istio-ingress-azure/     the gateway: injected Deployment, Azure LB Service, HPA, PDB, SDS Role, Gateway resource
-├── helm/nginx-test/              nginx Deployment + Service + VirtualService bound to that Gateway
+├── helm/nginx-test/              nginx Deployment + Service + HTTPRoute/VirtualService bound to that Gateway (plain test)
+├── helm/demoweb-sso/             Keycloak (realm: user, OIDC + SAML clients) + oauth2-proxy + nginx web + routes + mesh policies
+├── docs/SSO.md                   how the SSO works, adding services, SAML, troubleshooting
 └── scripts/
-    ├── deploy-istio-gateway.sh   installs Istio if missing (or enables the AKS add-on), deploys the chart, waits for the IP
-    ├── test-gateway.sh           deploys nginx-test, curls it through the LB, checks the istio-envoy header, cleans up
-    └── undeploy-istio-gateway.sh removes it all
+    ├── deploy-demoweb.sh         ONE command: gateway in demoweb + SSO stack; prints URL and credentials
+    ├── test-sso.sh               browser-like login test from your laptop + in-cluster bypass check
+    ├── undeploy-demoweb.sh       remove the SSO stack (--all: gateway + namespace too)
+    ├── deploy-istio-gateway.sh   gateway only: auto-detects Azure-managed Istio / add-on / none, waits for the IP
+    ├── test-gateway.sh           plain nginx through the gateway (no login)
+    └── undeploy-istio-gateway.sh
 ```
 
 ## Quick start (Azure-managed Istio base)

@@ -59,7 +59,7 @@ HDR=(); [ "$HOST" != "*" ] && HDR=(-H "Host: $HOST")
 info "GET $URL ${HOST:+(Host: $HOST)}"
 PASS=0
 for i in $(seq 1 12); do
-  OUT="$(curl -s -m 8 -D - "${HDR[@]}" "$URL" 2>/dev/null || true)"
+  OUT="$(curl -s -m 8 -D - ${HDR[@]+"${HDR[@]}"} "$URL" 2>/dev/null || true)"
   CODE="$(printf '%s' "$OUT" | head -1 | awk '{print $2}')"
   if [ "$CODE" = "200" ]; then PASS=1; break; fi
   printf '    attempt %2d: HTTP %s (LB rules / routes still converging)\n' "$i" "${CODE:-no response}"; sleep 5
@@ -72,7 +72,7 @@ printf '%s' "$OUT" | grep -i '^x-served-by:' | sed 's/^/    pod: /'
 printf '%s' "$OUT" | grep -o '<h1>.*</h1>' | sed 's/<[^>]*>//g;s/^/    body: /'
 
 info "5 requests — should spread across the nginx replicas"
-for _ in 1 2 3 4 5; do curl -s -m 8 -D - -o /dev/null "${HDR[@]}" "$URL" | grep -i '^x-served-by' | tr -d '\r'; done | sort | uniq -c | sed 's/^/    /'
+for _ in 1 2 3 4 5; do curl -s -m 8 -D - -o /dev/null ${HDR[@]+"${HDR[@]}"} "$URL" | grep -i '^x-served-by' | tr -d '\r'; done | sort | uniq -c | sed 's/^/    /'
 
 if [ "$KEEP" = 1 ]; then ok "kept: $TEST_NS/$TEST_RELEASE  →  $URL"; else
   info "cleaning up ($TEST_NS)"; helm -n "$TEST_NS" uninstall "$TEST_RELEASE" >/dev/null; kubectl delete ns "$TEST_NS" --wait=false >/dev/null; ok "removed (use --keep to leave it running)"

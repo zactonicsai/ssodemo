@@ -1,0 +1,79 @@
+{{- $kc := .Values.keycloak }}
+# Realm import (mounted from a Secret because it carries the client secret and the demo password).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-realm
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  {{ $kc.realm.name }}-realm.json: |
+    {
+      "realm": {{ $kc.realm.name | quote }},
+      "displayName": {{ $kc.realm.displayName | quote }},
+      "enabled": true,
+      "sslRequired": "none",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "bruteForceProtected": true,
+      "roles": { "realm": [ { "name": "web-user", "description": "May use the web apps behind the gateway" } ] },
+      "users": [
+        {
+          "username": {{ $kc.realm.user.username | quote }},
+          "enabled": true,
+          "email": {{ $kc.realm.user.email | quote }},
+          "emailVerified": true,
+          "firstName": {{ $kc.realm.user.firstName | quote }},
+          "lastName": {{ $kc.realm.user.lastName | quote }},
+          "credentials": [ { "type": "password", "value": {{ $kc.realm.user.password | quote }}, "temporary": false } ],
+          "realmRoles": [ "web-user", "default-roles-{{ $kc.realm.name }}" ]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": {{ $kc.realm.oidcClientId | quote }},
+          "name": "Gateway login (oauth2-proxy)",
+          "protocol": "openid-connect",
+          "enabled": true,
+          "publicClient": false,
+          "clientAuthenticatorType": "client-secret",
+          "secret": {{ .Values.oauth2Proxy.clientSecret | quote }},
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": false,
+          "rootUrl": {{ .Values.publicUrl | quote }},
+          "redirectUris": [ "{{ .Values.publicUrl }}/oauth2/callback" ],
+          "webOrigins": [ {{ .Values.publicUrl | quote }} ],
+          "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "{{ .Values.publicUrl }}/*" },
+          "defaultClientScopes": [ "openid", "profile", "email", "roles", "web-origins" ],
+          "protocolMappers": [
+            {
+              "name": "realm roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper",
+              "config": { "claim.name": "roles", "jsonType.label": "String", "multivalued": "true", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true" }
+            }
+          ]
+        },
+        {
+          "clientId": {{ $kc.realm.samlClientId | quote }},
+          "name": "SAML service provider (for apps that speak SAML)",
+          "protocol": "saml",
+          "enabled": true,
+          "rootUrl": {{ .Values.publicUrl | quote }},
+          "redirectUris": [ "{{ .Values.publicUrl }}/*" ],
+          "attributes": {
+            "saml.assertion.signature": "true",
+            "saml.server.signature": "true",
+            "saml.client.signature": "false",
+            "saml.force.post.binding": "true",
+            "saml_name_id_format": "email",
+            "saml.authnstatement": "true"
+          },
+          "protocolMappers": [
+            { "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper",
+              "config": { "user.attribute": "email", "attribute.name": "email", "attribute.nameformat": "Basic", "friendly.name": "email" } },
+            { "name": "roles", "protocol": "saml", "protocolMapper": "saml-role-list-mapper",
+              "config": { "attribute.name": "Role", "attribute.nameformat": "Basic", "single": "true" } }
+          ]
+        }
+      ]
+    }

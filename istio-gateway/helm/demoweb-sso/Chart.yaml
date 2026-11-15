@@ -1,0 +1,10 @@
+apiVersion: v2
+name: demoweb-sso
+description: >-
+  SSO demo behind the Istio ingress gateway: Keycloak (start-dev, realm imported with a user, an OIDC client
+  and a SAML client), oauth2-proxy enforcing login in front of an nginx web app, Istio routes (HTTPRoute or
+  VirtualService) and mesh policies (mTLS + AuthorizationPolicy so the web pods accept traffic only via
+  oauth2-proxy). Add more services behind the same login by appending to `apps`.
+type: application
+version: 0.1.0
+appVersion: "keycloak-26"

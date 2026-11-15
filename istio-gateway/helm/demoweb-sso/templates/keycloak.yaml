@@ -1,0 +1,136 @@
+{{- $kc := .Values.keycloak }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ $kc.admin.username | quote }}
+  password: {{ $kc.admin.password | quote }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    app: keycloak
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  replicas: 1                        # start-dev = embedded H2, single instance, demo only
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak, version: v1 }
+      annotations:
+        checksum/realm: {{ include (print $.Template.BasePath "/keycloak-realm.yaml") . | sha256sum | trunc 16 }}
+    spec:
+      serviceAccountName: keycloak
+      containers:
+        - name: keycloak
+          image: {{ $kc.image | quote }}
+          args:
+            - start-dev
+            - --import-realm
+            - --http-relative-path={{ $kc.relativePath }}
+            - --hostname={{ include "sso.kcUrl" . }}
+            - --hostname-strict=false
+            - --hostname-backchannel-dynamic=true      # oauth2-proxy talks to it on the cluster-internal URL
+            - --proxy-headers=xforwarded              # trust X-Forwarded-* from the Istio gateway
+            - --http-enabled=true
+            - --health-enabled=true
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
+            - name: KC_LOG_LEVEL
+              value: info
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          # Keycloak 26 serves /health on the MANAGEMENT port (9000), not 8080.
+          startupProbe:
+            httpGet: { path: {{ $kc.relativePath }}/health/started, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: {{ $kc.relativePath }}/health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: {{ $kc.relativePath }}/health/live, port: management }
+            periodSeconds: 20
+          resources:
+            {{- toYaml $kc.resources | nindent 12 }}
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+            - { name: data, mountPath: /opt/keycloak/data/h2 }
+      volumes:
+        - name: realm
+          secret: { secretName: keycloak-realm }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  labels:
+    app: keycloak
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: http-management, port: 9000, targetPort: management }
+---
+# After (re)install: let the admin console be used over plain http on the master realm too (demo over an IP).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-post-install
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels: { app: keycloak-post-install }
+      annotations:
+        sidecar.istio.io/inject: "false"     # short job; keep it out of the mesh so it can exit cleanly
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kcadm
+          image: {{ $kc.image | quote }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              KC=http://keycloak.{{ .Release.Namespace }}.svc.cluster.local:8080{{ $kc.relativePath }}
+              # (the keycloak image has no curl; kcadm itself is the readiness check)
+              for i in $(seq 1 60); do
+                /opt/keycloak/bin/kcadm.sh config credentials --server "$KC" --realm master --user "$KC_USER" --password "$KC_PASS" 2>/dev/null && break
+                echo "waiting for keycloak ($i)…"; sleep 5
+              done
+              /opt/keycloak/bin/kcadm.sh update realms/master -s sslRequired=NONE
+              /opt/keycloak/bin/kcadm.sh update realms/{{ $kc.realm.name }} -s sslRequired=NONE
+              echo "master + {{ $kc.realm.name }} realms: sslRequired=NONE"
+          env:
+            - name: KC_USER
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_PASS
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }

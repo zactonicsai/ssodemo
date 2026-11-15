@@ -1,5 +1,7 @@
 # shellcheck shell=bash
-set -euo pipefail
+set -eo pipefail
+# macOS ships bash 3.2, where `set -u` trips over empty arrays; only enable it on bash >= 4.4
+if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then set -u; fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---- defaults (env overrides) -------------------------------------------------------------------

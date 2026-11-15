@@ -1,0 +1,79 @@
+# scripts/deploy-demoweb.sh fills in publicUrl and the secrets; by hand:
+#   helm upgrade --install demoweb helm/demoweb-sso -n demoweb --set publicUrl=http://20.1.2.3 ...
+
+# The URL browsers use to reach the gateway — the LB IP or the DNS label. No trailing slash.
+# Keycloak's issuer and oauth2-proxy's redirect URL are derived from it, so it must be exactly what the browser sees.
+publicUrl: http://CHANGE-ME
+
+# ---- how routes bind to the gateway ------------------------------------------------------------------------
+routeKind: httproute                  # httproute (Gateway API, aks-gateway-api mode) | virtualservice (Istio Gateway)
+gateway: demoweb/default-gateway      # <namespace>/<gateway name>
+hostname: ""                          # "" = any host; set when you have a real DNS name (also use it in publicUrl)
+
+# ---- Keycloak (identity provider) ---------------------------------------------------------------------------
+keycloak:
+  image: quay.io/keycloak/keycloak:26.0.7
+  relativePath: /auth                 # Keycloak is served under <publicUrl>/auth
+  admin:
+    username: admin
+    password: admin123                # change for anything but a demo
+  realm:
+    name: demoweb
+    displayName: Demo Web SSO
+    user:                             # the demo user
+      username: demo
+      password: demo123
+      email: demo@example.com
+      firstName: Demo
+      lastName: User
+    oidcClientId: oauth2-proxy        # used by oauth2-proxy (gateway login)
+    samlClientId: nginx-saml          # ready for apps that speak SAML themselves (see docs/SSO.md)
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits:   { cpu: "1",  memory: 1536Mi }
+
+# ---- oauth2-proxy (login enforcement) ----------------------------------------------------------------------
+oauth2Proxy:
+  image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+  clientSecret: CHANGE-ME-client-secret      # shared with the Keycloak OIDC client (the script generates it)
+  cookieSecret: CHANGE-ME-32-bytes-base64    # 16/24/32 bytes, base64 (script generates it)
+  cookieSecure: false                        # true once publicUrl is https://
+  emailDomains: ["*"]
+  allowedRole: ""                            # e.g. web-user → only users with this realm role get in
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+# ---- protected applications ---------------------------------------------------------------------------------
+# Every entry becomes an oauth2-proxy upstream: requests to <publicUrl><path> reach <service>:<port><path> after
+# login (path is forwarded unchanged — serve the app under that prefix, or let it ignore it). Most specific path
+# wins. One login, one cookie for all of them. Add more services here, in any namespace.
+apps:
+  - name: web
+    path: /
+    service: web                      # Service name (same namespace unless `namespace: other` is given)
+    port: 80
+  # - name: api
+  #   path: /api/
+  #   service: my-api
+  #   namespace: backend
+  #   port: 8080
+
+# ---- the bundled nginx web app -------------------------------------------------------------------------------
+web:
+  enabled: true
+  image: nginx:1.27-alpine
+  replicas: 2
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits:   { cpu: 200m, memory: 64Mi }
+
+# ---- mesh policies -------------------------------------------------------------------------------------------
+mesh:
+  mtlsStrict: true                    # PeerAuthentication STRICT for web + oauth2-proxy + keycloak
+  lockdownWeb: true                   # AuthorizationPolicy: web pods accept HTTP only from oauth2-proxy's identity
+  virtualService:                     # mesh-side VirtualService + DestinationRule for the web service
+    enabled: true
+    timeout: 10s
+    retries: 2
