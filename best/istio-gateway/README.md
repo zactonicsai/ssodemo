@@ -2,6 +2,10 @@
 
 Three layers, each installed on its own against the cluster your `kubectl` currently points at:
 
+az aks delete -g devpod -n demo1
+az aks machine list -g devpod --cluster-name demo1 --nodepool-name aksmanagedap -o table
+az resource list -g MC_devpod_demo1_centralus -o table
+
 | Layer | What | Install | Remove | Test |
 |---|---|---|---|---|
 | 1. Gateway | Istio ingress + Azure LB (`helm/istio-ingress-azure`) | `scripts/install-platform.sh` (step 1) or `scripts/deploy-istio-gateway.sh` | `scripts/uninstall-platform.sh --all` | `scripts/test-gateway.sh` |
