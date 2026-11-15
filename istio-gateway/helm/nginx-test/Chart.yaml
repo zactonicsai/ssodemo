@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nginx-test
+description: A tiny nginx Deployment + Service + VirtualService to prove traffic flows through the Istio ingress gateway.
+type: application
+version: 0.1.0
+appVersion: "1.27"

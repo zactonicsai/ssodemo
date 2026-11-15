@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app: {{ .Release.Name }} }
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: { app: {{ .Release.Name }} }
+  template:
+    metadata:
+      labels: { app: {{ .Release.Name }}, version: v1 }
+      annotations:
+        checksum/html: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum | trunc 16 }}
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 101, runAsGroup: 101 }
+      containers:
+        - name: nginx
+          image: {{ .Values.image | quote }}
+          ports: [{ containerPort: 8080, name: http }]
+          readinessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 5 }
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: html, mountPath: /usr/share/nginx/html/index.html, subPath: index.html }
+            - { name: html, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf }
+            - { name: cache, mountPath: /var/cache/nginx }
+            - { name: run, mountPath: /var/run }
+      volumes:
+        - name: html
+          configMap: { name: {{ .Release.Name }}-html }
+        - { name: cache, emptyDir: {} }
+        - { name: run, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app: {{ .Release.Name }} }
+spec:
+  selector: { app: {{ .Release.Name }} }
+  ports:
+    - name: http          # "http" prefix tells Istio the protocol
+      port: 80
+      targetPort: 8080
+---
+{{- $gwNs := (split "/" .Values.gateway)._0 }}
+{{- $gwName := (split "/" .Values.gateway)._1 }}
+{{- if eq .Values.routeKind "httproute" }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app: {{ .Release.Name }} }
+spec:
+  parentRefs:
+    - name: {{ $gwName }}
+      namespace: {{ $gwNs }}
+  {{- if ne .Values.host "*" }}
+  hostnames:
+    - {{ .Values.host | quote }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.pathPrefix | quote }}
+      {{- if ne .Values.pathPrefix "/" }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      {{- end }}
+      backendRefs:
+        - name: {{ .Release.Name }}
+          port: 80
+{{- else }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app: {{ .Release.Name }} }
+spec:
+  hosts:
+    - {{ .Values.host | quote }}
+  gateways:
+    - {{ .Values.gateway }}
+  http:
+    - match:
+        - uri:
+            prefix: {{ .Values.pathPrefix | quote }}
+      {{- if ne .Values.pathPrefix "/" }}
+      rewrite:
+        uri: /
+      {{- end }}
+      route:
+        - destination:
+            host: {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: 80
+{{- end }}

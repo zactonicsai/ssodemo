@@ -1,0 +1,130 @@
+Name:                   istiod
+Namespace:              aks-istio-system
+CreationTimestamp:      Sun, 15 Nov 2026 12:57:57 -0600
+Labels:                 app=istiod
+                        app.kubernetes.io/instance=azure-service-mesh-istio-discovery
+                        app.kubernetes.io/managed-by=Helm
+                        app.kubernetes.io/name=istiod
+                        app.kubernetes.io/part-of=istio
+                        app.kubernetes.io/version=1.0.0-v20261028-addon-261105-1
+                        azureservicemesh/istio.component=istio-discovery
+                        helm.sh/chart=azure-service-mesh-istio-discovery-addon-1.0.0-v20261028-addon
+                        helm.toolkit.fluxcd.io/name=azure-service-mesh-istio-discovery-helmrelease
+                        helm.toolkit.fluxcd.io/namespace=6af9fe4926c0650001b87e4f
+                        install.operator.istio.io/owning-resource=unknown
+                        istio=pilot
+                        istio.io/rev=default
+                        kubernetes.azure.com/managedby=aks
+                        operator.istio.io/component=Pilot
+                        release=azure-service-mesh-istio-discovery
+Annotations:            deployment.kubernetes.io/revision: 1
+                        meta.helm.sh/release-name: azure-service-mesh-istio-discovery
+                        meta.helm.sh/release-namespace: kube-system
+Selector:               istio=pilot
+Replicas:               2 desired | 2 updated | 2 total | 2 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 100% max surge
+Pod Template:
+  Labels:           app=istiod
+                    app.kubernetes.io/instance=azure-service-mesh-istio-discovery
+                    app.kubernetes.io/managed-by=Helm
+                    app.kubernetes.io/name=istiod
+                    app.kubernetes.io/part-of=istio
+                    app.kubernetes.io/version=1.0.0-v20261028-addon-261105-1
+                    azureservicemesh/istio.component=istio-discovery
+                    helm.sh/chart=azure-service-mesh-istio-discovery-addon-1.0.0-v20261028-addon
+                    install.operator.istio.io/owning-resource=unknown
+                    istio=pilot
+                    istio.io/dataplane-mode=none
+                    istio.io/rev=default
+                    kubernetes.azure.com/managedby=aks
+                    operator.istio.io/component=Pilot
+                    sidecar.istio.io/inject=false
+  Annotations:      prometheus.io/port: 15014
+                    prometheus.io/scrape: true
+                    sidecar.istio.io/inject: false
+  Service Account:  istiod
+  Containers:
+   discovery:
+    Image:       mcr.microsoft.com/oss/v2/istio/pilot:v1.31.3-1
+    Ports:       8080/TCP (http-debug), 15010/TCP (grpc-xds), 15012/TCP (tls-xds), 15017/TCP (https-webhooks), 15014/TCP (http-monitoring)
+    Host Ports:  0/TCP (http-debug), 0/TCP (grpc-xds), 0/TCP (tls-xds), 0/TCP (https-webhooks), 0/TCP (http-monitoring)
+    Args:
+      discovery
+      --monitoringAddr=:15014
+      --log_output_level=default:info
+      --domain
+      cluster.local
+      --keepaliveMaxServerConnectionAge
+      30m
+    Limits:
+      cpu:     2
+      memory:  8Gi
+    Requests:
+      cpu:      500m
+      memory:   2Gi
+    Readiness:  http-get http://:8080/ready delay=1s timeout=5s period=3s successThreshold=1 failureThreshold=3
+    Environment:
+      REVISION:                                     default
+      PILOT_CERT_PROVIDER:                          istiod
+      POD_NAME:                                      (v1:metadata.name)
+      POD_NAMESPACE:                                 (v1:metadata.namespace)
+      SERVICE_ACCOUNT:                               (v1:spec.serviceAccountName)
+      KUBECONFIG:                                   /var/run/secrets/remote/config
+      CA_TRUSTED_NODE_ACCOUNTS:                     kube-system/ztunnel
+      PILOT_GATEWAY_API_CONTROLLER_NAME:            istio.aks.azure.com/gateway-controller
+      PILOT_GATEWAY_API_DEFAULT_GATEWAYCLASS_NAME:  approuting-istio
+      PILOT_TRACE_SAMPLING:                         1
+      PILOT_ENABLE_ANALYSIS:                        false
+      CLUSTER_ID:                                   Kubernetes
+      GOMAXPROCS:                                   2 (limits.cpu)
+      PLATFORM:                                     
+    Mounts:
+      /etc/cacerts from cacerts (ro)
+      /var/run/secrets/istio-dns from local-certs (rw)
+      /var/run/secrets/istiod/ca from istio-csr-ca-configmap (ro)
+      /var/run/secrets/istiod/tls from istio-csr-dns-cert (ro)
+      /var/run/secrets/remote from istio-kubeconfig (ro)
+      /var/run/secrets/tokens from istio-token (ro)
+  Volumes:
+   local-certs:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     Memory
+    SizeLimit:  <unset>
+   istio-token:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  43200
+   cacerts:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  cacerts
+    Optional:    true
+   istio-kubeconfig:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  istio-kubeconfig
+    Optional:    true
+   istio-csr-dns-cert:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  istiod-tls
+    Optional:    true
+   istio-csr-ca-configmap:
+    Type:               ConfigMap (a volume populated by a ConfigMap)
+    Name:               istio-ca-root-cert
+    Optional:           true
+  Priority Class Name:  system-cluster-critical
+  Node-Selectors:       <none>
+  Tolerations:          CriticalAddonsOnly op=Exists
+                        cni.istio.io/not-ready op=Exists
+                        kubernetes.azure.com/hostedvm=true:NoSchedule
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Progressing    True    NewReplicaSetAvailable
+  Available      True    MinimumReplicasAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   istiod-89b88c59c (2/2 replicas created)
+Events:
+  Type    Reason             Age    From                   Message
+  ----    ------             ----   ----                   -------
+  Normal  ScalingReplicaSet  4m13s  deployment-controller  Scaled up replica set istiod-89b88c59c from 0 to 1
+  Normal  ScalingReplicaSet  3m58s  deployment-controller  Scaled up replica set istiod-89b88c59c from 1 to 2

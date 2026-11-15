@@ -1,0 +1,15 @@
+# helm upgrade --install nginx-test helm/nginx-test -n nginx-test --create-namespace
+# (label the namespace istio-injection=enabled first so nginx gets a sidecar; scripts/test-gateway.sh does this)
+image: nginx:1.27-alpine
+replicas: 2
+resources:
+  requests: { cpu: 10m, memory: 16Mi }
+  limits:   { cpu: 200m, memory: 64Mi }
+
+# Where to attach: <namespace>/<Gateway name> from the istio-ingress-azure chart
+gateway: istio-ingress/default-gateway
+# httproute      : Gateway API (mode aks-gateway-api)  -> HTTPRoute with parentRef to the Gateway
+# virtualservice : Istio API (selfmanaged / aks-addon) -> VirtualService bound to the Istio Gateway
+routeKind: httproute
+host: "*"            # "*" = answer any Host (curl the raw IP works); or e.g. nginx.example.com
+pathPrefix: /        # e.g. /nginx to share the gateway with other apps (rewritten to / for nginx)

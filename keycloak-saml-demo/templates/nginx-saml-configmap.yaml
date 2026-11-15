@@ -1,0 +1,200 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "keycloak-saml-demo.fullname" . }}-nginx-config
+  labels:
+    {{- include "keycloak-saml-demo.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+
+        # Internal SAML session validation endpoint
+        location = /_saml_validate {
+            internal;
+            proxy_pass http://127.0.0.1:9000/saml/validate;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header Cookie $http_cookie;
+            proxy_set_header X-Original-URI $request_uri;
+        }
+
+        # SAML SP endpoints (login, ACS POST callback, metadata, logout)
+        location /saml/ {
+            proxy_pass http://127.0.0.1:9000/saml/;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        # Redirect unauthenticated requests (401) to SAML login initiator
+        error_page 401 = @saml_login;
+        location @saml_login {
+            return 302 {{ .Values.global.nginxPublicUrl }}/saml/login?rd=$request_uri;
+        }
+
+        # Protected Website
+        location / {
+            auth_request /_saml_validate;
+            auth_request_set $saml_user $upstream_http_x_auth_user;
+            auth_request_set $saml_email $upstream_http_x_auth_email;
+
+            root /usr/share/nginx/html;
+            index index.html;
+            sub_filter '__SAML_USER__' $saml_user;
+            sub_filter '__SAML_EMAIL__' $saml_email;
+            sub_filter_once off;
+        }
+    }
+
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Protected SAML SSO Portal</title>
+      <style>
+        body { font-family: system-ui, sans-serif; margin: 3rem; background: #f8fafc; color: #0f172a; }
+        .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 540px; }
+        .badge { background: #dcfce7; color: #166534; padding: 0.25rem 0.6rem; border-radius: 4px; font-weight: 600; font-size: 0.85rem; }
+        a.logout { display: inline-block; margin-top: 1.5rem; color: #dc2626; text-decoration: none; font-weight: 600; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <span class="badge">SAML 2.0 Authenticated (demosso)</span>
+        <h2>Welcome to the Protected NGINX Service</h2>
+        <p><strong>Authenticated Principal:</strong> <code>__SAML_USER__</code></p>
+        <p><strong>SAML Email Attribute:</strong> <code>__SAML_EMAIL__</code></p>
+        <a class="logout" href="/saml/sls">Sign Out (SAML SLO)</a>
+      </div>
+    </body>
+    </html>
+
+  saml_sp.py: |
+    import base64, datetime, hmac, hashlib, os, urllib.parse, uuid, zlib
+    import xml.etree.ElementTree as ET
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.cookies import SimpleCookie
+
+    IDP_SSO_URL = "{{ .Values.global.keycloakPublicUrl }}/realms/{{ .Values.realm.name }}/protocol/saml"
+    SP_ENTITY_ID = "{{ .Values.realm.clientId }}"
+    SP_ACS_URL = "{{ .Values.global.nginxPublicUrl }}/saml/acs"
+    SECRET_KEY = os.environ.get("SESSION_SECRET", "default-secret").encode()
+
+    def sign_session(username, email):
+        payload = f"{username}|{email}"
+        sig = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+        return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode()
+
+    def verify_session(token):
+        try:
+            raw = base64.urlsafe_b64encode(base64.urlsafe_b64decode(token.encode()))
+            decoded = base64.urlsafe_b64decode(token.encode()).decode()
+            username, email, sig = decoded.rsplit("|", 2)
+            expected = hmac.new(SECRET_KEY, f"{username}|{email}".encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, expected):
+                return username, email
+        except Exception:
+            pass
+        return None, None
+
+    def build_authn_request():
+        req_id = "_" + str(uuid.uuid4())
+        issue_instant = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        xml = (
+            f'<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" '
+            f'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" '
+            f'ID="{req_id}" Version="2.0" IssueInstant="{issue_instant}" '
+            f'Destination="{IDP_SSO_URL}" '
+            f'ProtocolBinding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" '
+            f'AssertionConsumerServiceURL="{SP_ACS_URL}">'
+            f'<saml:Issuer>{SP_ENTITY_ID}</saml:Issuer>'
+            f'</samlp:AuthnRequest>'
+        )
+        compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+        deflated = compressor.compress(xml.encode("utf-8")) + compressor.flush()
+        b64 = base64.b64encode(deflated).decode("utf-8")
+        return urllib.parse.quote(b64)
+
+    class SAMLHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/saml/validate":
+                cookie = SimpleCookie(self.headers.get("Cookie"))
+                if "SAML_SESSION" in cookie:
+                    user, email = verify_session(cookie["SAML_SESSION"].value)
+                    if user:
+                        self.send_response(200)
+                        self.send_header("X-Auth-User", user)
+                        self.send_header("X-Auth-Email", email)
+                        self.end_headers()
+                        return
+                self.send_response(401)
+                self.end_headers()
+
+            elif parsed.path == "/saml/login":
+                saml_req = build_authn_request()
+                redirect_url = f"{IDP_SSO_URL}?SAMLRequest={saml_req}"
+                self.send_response(302)
+                self.send_header("Location", redirect_url)
+                self.end_headers()
+
+            elif parsed.path == "/saml/metadata":
+                meta = (
+                    f'<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{SP_ENTITY_ID}">'
+                    f'<SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" '
+                    f'protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">'
+                    f'<AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" '
+                    f'Location="{SP_ACS_URL}" index="1"/>'
+                    f'</SPSSODescriptor></EntityDescriptor>'
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/xml")
+                self.end_headers()
+                self.wfile.write(meta.encode())
+
+            elif parsed.path == "/saml/sls":
+                self.send_response(302)
+                self.send_header("Set-Cookie", "SAML_SESSION=; Path=/; Max-Age=0; HttpOnly")
+                self.send_header("Location", "/")
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path.startswith("/saml/acs"):
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                params = urllib.parse.parse_qs(body)
+                saml_resp_b64 = params.get("SAMLResponse", [None])[0]
+                if not saml_resp_b64:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                xml_bytes = base64.b64decode(saml_resp_b64)
+                root = ET.fromstring(xml_bytes)
+                ns = {
+                    "samlp": "urn:oasis:names:tc:SAML:2.0:protocol",
+                    "saml": "urn:oasis:names:tc:SAML:2.0:assertion"
+                }
+                status = root.find(".//samlp:StatusCode", ns)
+                if status is None or not status.attrib.get("Value", "").endswith(":Success"):
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                name_id = root.find(".//saml:Subject/saml:NameID", ns)
+                username = name_id.text if name_id is not None else "unknown"
+                email = "unknown"
+                for attr in root.findall(".//saml:Attribute", ns):
+                    if attr.attrib.get("Name") == "email":
+                        val = attr.find("saml:AttributeValue", ns)
+                        if val is not None and val.text:
+                            email = val.text
+                token = sign_session(username, email)
+                self.send_response(302)
+                self.send_header("Set-Cookie", f"SAML_SESSION={token}; Path=/; HttpOnly; SameSite=Lax")
+                self.send_header("Location", "/")
+                self.end_headers()
+
+    if __name__ == "__main__":
+        HTTPServer(("127.0.0.1", 9000), SAMLHandler).serve_forever()
