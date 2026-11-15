@@ -68,11 +68,18 @@ mkdir -p "$(dirname "$SECRETS_FILE")"
 if [ -f "$SECRETS_FILE" ]; then source "$SECRETS_FILE"; ok "reusing secrets from $SECRETS_FILE"
 else
   OAUTH2_CLIENT_SECRET="$(openssl rand -hex 24)"
-  OAUTH2_COOKIE_SECRET="$(openssl rand -base64 32 | tr -d '\n')"
+  # oauth2-proxy only base64-decodes URL-safe base64 ("-" "_"); standard "+" "/" would be taken as a raw 44-byte string
+  OAUTH2_COOKIE_SECRET="$(openssl rand -base64 32 | tr -d '\n' | tr -- '+/' '-_')"
   KC_ADMIN_PASSWORD="$(openssl rand -hex 8)"
   printf 'OAUTH2_CLIENT_SECRET=%s\nOAUTH2_COOKIE_SECRET=%s\nKC_ADMIN_PASSWORD=%s\n' "$OAUTH2_CLIENT_SECRET" "$OAUTH2_COOKIE_SECRET" "$KC_ADMIN_PASSWORD" > "$SECRETS_FILE"
   chmod 600 "$SECRETS_FILE"; ok "generated secrets → $SECRETS_FILE (keep it; delete it to rotate)"
 fi
+# normalise a cookie secret written by an older version of this script (standard base64 -> URL-safe)
+case "$OAUTH2_COOKIE_SECRET" in *+*|*/*)
+  OAUTH2_COOKIE_SECRET="$(printf '%s' "$OAUTH2_COOKIE_SECRET" | tr -- '+/' '-_')"
+  sed -i.bak "s#^OAUTH2_COOKIE_SECRET=.*#OAUTH2_COOKIE_SECRET=$OAUTH2_COOKIE_SECRET#" "$SECRETS_FILE" && rm -f "$SECRETS_FILE.bak"
+  ok "cookie secret converted to URL-safe base64 (oauth2-proxy requirement)" ;;
+esac
 REV="$(detect_revision "$([ "$MODE" = selfmanaged ] && echo "$ISTIO_NS" || echo aks-istio-system)")"
 label_namespace_for_mesh "$NAMESPACE" "$REV" sidecar
 
@@ -91,8 +98,12 @@ SET=(
 [ -n "$VALUES_FILE" ] && SET+=(-f "$VALUES_FILE")
 SET+=(${EXTRA_SET[@]+"${EXTRA_SET[@]}"})
 run helm lint "$ROOT/helm/demoweb-sso" ${SET[@]+"${SET[@]}"} >/dev/null && ok "chart ok"
-run helm upgrade --install "$RELEASE" "$ROOT/helm/demoweb-sso" -n "$NAMESPACE" ${SET[@]+"${SET[@]}"} --wait --timeout 10m
+# --wait can abort on a dropped watch ("http2: client connection lost") from a laptop; the release is still applied,
+# so don't die here — the explicit rollout waits below are the real check.
+run helm upgrade --install "$RELEASE" "$ROOT/helm/demoweb-sso" -n "$NAMESPACE" ${SET[@]+"${SET[@]}"} --wait --timeout 10m \
+  || warn "helm --wait ended early (connection drop?) — continuing with rollout checks; status: $(helm -n "$NAMESPACE" status "$RELEASE" -o json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["status"])' 2>/dev/null || echo unknown)"
 for d in keycloak oauth2-proxy web; do run kubectl -n "$NAMESPACE" rollout status "deploy/$d" --timeout=300s; done
+kubectl -n "$NAMESPACE" wait --for=condition=complete job/keycloak-post-install --timeout=300s >/dev/null 2>&1 && ok "keycloak post-install job completed (sslRequired=NONE on master + demoweb)" || warn "post-install job not complete yet: kubectl -n $NAMESPACE logs job/keycloak-post-install"
 C="$(kubectl -n "$NAMESPACE" get pod -l app=web -o jsonpath='{.items[0].spec.containers[*].name}')"
 if kubectl api-resources --api-group=security.istio.io 2>/dev/null | grep -q AuthorizationPolicy; then
   case "$C" in *istio-proxy*) ok "Istio CRDs present and web pods have sidecars ($C): mTLS + AuthorizationPolicy lockdown active" ;;

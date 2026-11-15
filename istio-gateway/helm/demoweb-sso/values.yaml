@@ -36,7 +36,7 @@ keycloak:
 oauth2Proxy:
   image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
   clientSecret: CHANGE-ME-client-secret      # shared with the Keycloak OIDC client (the script generates it)
-  cookieSecret: CHANGE-ME-32-bytes-base64    # 16/24/32 bytes, base64 (script generates it)
+  cookieSecret: CHANGE-ME-32-bytes-base64    # 32 bytes as URL-SAFE base64: openssl rand -base64 32 | tr -- '+/' '-_'  (script generates it)
   cookieSecure: false                        # true once publicUrl is https://
   emailDomains: ["*"]
   allowedRole: ""                            # e.g. web-user → only users with this realm role get in
