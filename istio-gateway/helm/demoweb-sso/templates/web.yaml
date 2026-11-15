@@ -21,28 +21,32 @@ spec:
     metadata:
       labels: { app: web, version: v1 }
       annotations:
-        checksum/html: {{ include (print $.Template.BasePath "/web-config.yaml") . | sha256sum | trunc 16 }}
+        checksum/app: {{ include (print $.Template.BasePath "/web-config.yaml") . | sha256sum | trunc 16 }}
     spec:
       serviceAccountName: web
-      securityContext: { runAsNonRoot: true, runAsUser: 101, runAsGroup: 101 }
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000 }
       containers:
-        - name: nginx
+        - name: portal
           image: {{ .Values.web.image | quote }}
+          command: ["python3", "-I", "/app/app.py"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: WEB_ROOT, value: /app }
+            - { name: REQUIRE_AUTH, value: {{ ternary "1" "0" .Values.web.requireAuth | quote }} }
+            - { name: ADMIN_GROUP, value: {{ .Values.web.adminGroup | quote }} }
+            - { name: NAMESPACE_PREFIX, value: {{ .Values.web.namespacePrefix | quote }} }
+            - { name: LOGOUT_URL, value: "/oauth2/sign_out?rd={{ .Values.publicUrl }}{{ .Values.keycloak.relativePath }}/realms/{{ .Values.keycloak.realm.name }}/protocol/openid-connect/logout?client_id={{ .Values.keycloak.realm.oidcClientId }}%26post_logout_redirect_uri={{ .Values.publicUrl }}/" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
           ports: [{ containerPort: 8080, name: http }]
           readinessProbe: { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 5 }
           livenessProbe:  { httpGet: { path: /healthz, port: 8080 }, periodSeconds: 20 }
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
           volumeMounts:
-            - { name: html, mountPath: /usr/share/nginx/html/index.html, subPath: index.html }
-            - { name: html, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf }
-            - { name: cache, mountPath: /var/cache/nginx }
-            - { name: run, mountPath: /var/run }
+            - { name: app, mountPath: /app, readOnly: true }
       volumes:
-        - name: html
-          configMap: { name: web-html }
-        - { name: cache, emptyDir: {} }
-        - { name: run, emptyDir: {} }
+        - name: app
+          configMap: { name: web-app }
 ---
 apiVersion: v1
 kind: Service

@@ -1,35 +1,14 @@
 {{- if .Values.web.enabled }}
+# The portal: index.html + app.py (stdlib-only Python) shipped as a ConfigMap, run by the plain python image.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: web-html
+  name: web-app
   labels:
     {{- include "sso.labels" . | nindent 4 }}
 data:
-  default.conf: |
-    server {
-      listen 8080;
-      root /usr/share/nginx/html;
-      location = /healthz { return 200 'ok'; add_header Content-Type text/plain; }
-      # nginx's sub_filter shows who is logged in: oauth2-proxy sets X-Forwarded-User / -Email / -Preferred-Username
-      location / {
-        index index.html;
-        sub_filter '__USER__'  '$http_x_forwarded_preferred_username';
-        sub_filter '__EMAIL__' '$http_x_forwarded_email';
-        sub_filter '__POD__'   '$hostname';
-        sub_filter_once off;
-        add_header Cache-Control "no-store";
-      }
-    }
+  app.py: |
+    {{- .Files.Get "files/web/app.py" | nindent 4 }}
   index.html: |
-    <!doctype html><html><head><meta charset="utf-8"><title>demoweb — protected</title>
-    <style>body{font-family:system-ui;margin:3rem auto;max-width:44rem;background:#0f172a;color:#e2e8f0;line-height:1.5}
-    code{background:#1e293b;padding:.1em .4em;border-radius:4px}.ok{color:#4ade80}a{color:#7dd3fc}</style></head>
-    <body><h1><span class="ok">●</span> Logged in — nginx behind Istio + Keycloak SSO</h1>
-    <p>You are <strong>__USER__</strong> (<code>__EMAIL__</code>), served by pod <code>__POD__</code>.</p>
-    <p>Path: gateway → oauth2-proxy (checked your session cookie) → nginx (mTLS, accepts only oauth2-proxy).</p>
-    <p><a href="/oauth2/sign_out?rd={{ .Values.publicUrl }}{{ .Values.keycloak.relativePath }}/realms/{{ .Values.keycloak.realm.name }}/protocol/openid-connect/logout?client_id={{ .Values.keycloak.realm.oidcClientId }}%26post_logout_redirect_uri={{ .Values.publicUrl }}/">Sign out</a>
-     · <a href="{{ .Values.keycloak.relativePath }}/realms/{{ .Values.keycloak.realm.name }}/account">My account</a>
-     · <a href="{{ .Values.keycloak.relativePath }}/admin/">Keycloak admin</a></p>
-    </body></html>
+    {{- .Files.Get "files/web/index.html" | nindent 4 }}
 {{- end }}

@@ -37,7 +37,10 @@ data:
     {{- if $o.allowedRole }}
     allowed_roles = [{{ $o.allowedRole | quote }}]
     {{- end }}
-    oidc_groups_claim = "roles"
+    {{- if $o.allowedGroups }}
+    allowed_groups = {{ toJson $o.allowedGroups }}
+    {{- end }}
+    oidc_groups_claim = "groups"          # Keycloak group membership -> X-Forwarded-Groups for the apps
     skip_provider_button = true
     cookie_name = "_demoweb_sso"
     cookie_secure = {{ ternary "true" "false" $o.cookieSecure }}

@@ -18,7 +18,7 @@ browser ──► Azure LB ──► Istio ingress gateway (Gateway API, class a
 | **Istio gateway** | public entry point, Azure LB | `helm/istio-ingress-azure` (release `demoweb-gateway`) |
 | **Keycloak** (`start-dev`, realm imported on boot) | identity provider: users, OIDC client, SAML client | Deployment, Service, realm Secret, post-install Job |
 | **oauth2-proxy** | enforces login; one cookie for every app behind it; passes identity headers upstream | Deployment, Service, ConfigMap, Secret |
-| **web** (nginx) | the protected page; shows who is logged in | Deployment, Service, ConfigMap |
+| **web** (Python, `files/web/app.py` + `index.html`) | the portal page + `/api` stub functions; reads identity/groups from the oauth2-proxy headers | Deployment (python:3.12-slim), Service, ConfigMap |
 | **Routes** | `HTTPRoute`s (Gateway API) or one `VirtualService` (Istio API) on the gateway | `routes.yaml` |
 | **Mesh policies** | `PeerAuthentication` STRICT, `AuthorizationPolicy` (web only from oauth2-proxy), `VirtualService` + `DestinationRule` for web (timeouts, retries, outlier detection, subsets) | `mesh-policies.yaml` |
 
@@ -46,6 +46,43 @@ Secrets (OIDC client secret, cookie secret, Keycloak admin password) are generat
 
 Keycloak admin console: `http://<IP>/auth/admin/` — user `admin`, password in `.demoweb/<context>.env`
 (`kubectl -n demoweb get secret keycloak-admin -o jsonpath='{.data.password}' | base64 --decode`).
+
+## The portal app and its API
+
+`helm/demoweb-sso/files/web/` holds the whole web tier and is shipped to the cluster as a ConfigMap, so editing
+either file and re-running `scripts/deploy-demoweb.sh` rolls it out — no image build, no registry:
+
+* `index.html` — the Developer Workspaces portal. Tailwind is compiled **inline** (no external `src`/`href` at all,
+  works offline). It calls the API for identity, catalog, workspaces and events; create/start/stop/delete POST to
+  the API; the boot animation and the shell are simulated in the browser until the backend exists. The **API** tab
+  lists every function and lets you call it.
+* `app.py` — standard-library Python (`http.server`, no pip). `ROUTES` maps `METHOD regex` → function; each function
+  returns `(status, json)`. All of them return **static JSON** today. To build one out, replace its body (e.g. call
+  kubectl/helm or the Kubernetes API) — the routing, auth check and the page stay as they are. Add a function by
+  adding it to `ROUTES`; the API tab picks it up from `GET /api`.
+
+| Function | Today |
+|---|---|
+| `GET /api/me` | user, e-mail, groups, `isAdmin`, namespace — from `X-Forwarded-*` headers |
+| `GET /api/catalog` | languages/tools/sizes/profiles; `hardware` profile only for the admin group |
+| `GET /api/groups` | the groups the portal knows and what they unlock |
+| `GET/POST /api/workspaces`, `GET /api/workspaces/{name}`, `/logs` | sample list; create validates and echoes |
+| `POST /api/workspaces/{name}/{start|stop|delete}`, `DELETE …` | acknowledgement + the command the real version will run |
+| `GET /api/admin/workspaces` | admins only (403 otherwise) |
+| `GET /api/health`, `GET /api` | public: health, and the function index |
+
+Identity is trusted from headers, so the app must only be reachable through oauth2-proxy: it answers **401** when the
+headers are missing (`web.requireAuth`), and the NetworkPolicy / AuthorizationPolicy keep other pods from reaching it
+directly (a pod that could reach it could otherwise forge the headers).
+
+## Groups
+
+The realm has groups **`developers`** and **`admins`** (values `keycloak.realm.groups`). `demo` is in both; `dev2 /
+dev2pass` is in `developers` only (`keycloak.realm.extraUsers`). Keycloak puts group membership in the token
+(`groups` claim, OIDC client mapper) and the SAML assertion (`groups` attribute); oauth2-proxy forwards it as
+`X-Forwarded-Groups` and only lets members of `oauth2Proxy.allowedGroups` (default `[developers]`) log in at all.
+In the portal: `admins` unlocks the hardware profile and `/api/admin/*`. Manage membership in Keycloak → Groups;
+add a group to `keycloak.realm.groups` and redeploy to create it.
 
 ## Adding more services behind the same login
 

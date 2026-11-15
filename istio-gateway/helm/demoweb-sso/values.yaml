@@ -20,12 +20,15 @@ keycloak:
   realm:
     name: demoweb
     displayName: Demo Web SSO
-    user:                             # the demo user
+    groups: [developers, admins]      # realm groups; membership is sent to the apps as X-Forwarded-Groups
+    user:                             # the demo user (member of every group above)
       username: demo
       password: demo123
       email: demo@example.com
       firstName: Demo
       lastName: User
+    extraUsers:                       # more users: groups is a subset of realm groups
+      - { username: dev2, password: dev2pass, email: dev2@example.com, firstName: Second, lastName: Developer, groups: [developers] }
     oidcClientId: oauth2-proxy        # used by oauth2-proxy (gateway login)
     samlClientId: nginx-saml          # ready for apps that speak SAML themselves (see docs/SSO.md)
   resources:
@@ -39,7 +42,8 @@ oauth2Proxy:
   cookieSecret: CHANGE-ME-32-bytes-base64    # 32 bytes as URL-SAFE base64: openssl rand -base64 32 | tr -- '+/' '-_'  (script generates it)
   cookieSecure: false                        # true once publicUrl is https://
   emailDomains: ["*"]
-  allowedRole: ""                            # e.g. web-user → only users with this realm role get in
+  allowedGroups: [developers]                # only members of these Keycloak groups may log in ([] = anyone in the realm)
+  allowedRole: ""                            # alternatively a realm role, e.g. web-user
   replicas: 1
   resources:
     requests: { cpu: 20m, memory: 32Mi }
@@ -60,11 +64,14 @@ apps:
   #   namespace: backend
   #   port: 8080
 
-# ---- the bundled nginx web app -------------------------------------------------------------------------------
+# ---- the portal: Python web app + stub API (files/web/app.py + index.html) -----------------------------------
 web:
   enabled: true
-  image: nginx:1.27-alpine
+  image: python:3.12-slim              # stdlib only: no pip, no network needed in the pod
   replicas: 2
+  requireAuth: true                    # 401 unless oauth2-proxy identity headers are present
+  adminGroup: admins                   # Keycloak group that unlocks the hardware profile / admin API
+  namespacePrefix: ws-
   resources:
     requests: { cpu: 10m, memory: 16Mi }
     limits:   { cpu: 200m, memory: 64Mi }

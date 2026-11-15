@@ -120,7 +120,8 @@ DEMO_PASS="$(python3 -c 'import sys,json;print(json.load(sys.stdin)["keycloak"][
 echo
 info "done — open in any browser:"
 echo "    ${c_bold}${PUBLIC_URL}/${c_off}                 → redirected to Keycloak login, then the protected nginx page"
-echo "    login:  ${c_bold}${DEMO_USER} / ${DEMO_PASS}${c_off}"
+echo "    login:  ${c_bold}${DEMO_USER} / ${DEMO_PASS}${c_off}   (groups: developers, admins)"
+echo "            dev2 / dev2pass   (group: developers only — no hardware profile, no /api/admin)"
 echo "    Keycloak admin console: ${PUBLIC_URL}/auth/admin/   (admin / ${KC_ADMIN_PASSWORD})"
 echo "    realm:  ${PUBLIC_URL}/auth/realms/demoweb      SAML IdP metadata: ${PUBLIC_URL}/auth/realms/demoweb/protocol/saml/descriptor"
 echo

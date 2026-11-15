@@ -41,9 +41,10 @@ ok "got Keycloak login form"
 FINAL="$("${C[@]}" -L -o /tmp/sso-page.html -w '%{http_code} %{url_effective}' --data-urlencode "username=$USER_" --data-urlencode "password=$PASS_" --data-urlencode "credentialId=" "$ACTION")"
 CODE="${FINAL%% *}"; WHERE="${FINAL#* }"
 [ "$CODE" = 200 ] || { grep -o 'kc-feedback-text[^<]*<[^>]*>[^<]*' /tmp/sso-page.html | head -2; die "login did not end on the app (HTTP $CODE at $WHERE)"; }
-grep -q "Logged in" /tmp/sso-page.html || { head -c 400 /tmp/sso-page.html; die "ended with 200 at $WHERE but not on the protected page"; }
-ok "logged in → $WHERE"
-grep -o 'You are <strong>[^<]*</strong> (<code>[^<]*</code>)' /tmp/sso-page.html | sed 's/<[^>]*>//g;s/^/    page says: /'
+grep -q "<title>Developer Workspaces</title>" /tmp/sso-page.html || { head -c 400 /tmp/sso-page.html; die "ended with 200 at $WHERE but not on the portal page"; }
+ok "logged in → $WHERE (portal page served by the Python app)"
+"${C[@]}" "$URL/api/me" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("    /api/me says: user=%s email=%s groups=%s admin=%s"%(d["user"],d["email"],d["groups"],d["isAdmin"]))' || warn "/api/me not readable"
+"${C[@]}" "$URL/api/workspaces" | python3 -c 'import sys,json;print("    /api/workspaces:", [w["name"] for w in json.load(sys.stdin)["items"]], "(static stub data)")' || true
 grep -c "_demoweb_sso" "$JAR" >/dev/null && ok "session cookie _demoweb_sso set"
 
 info "3. second request with the cookie only"

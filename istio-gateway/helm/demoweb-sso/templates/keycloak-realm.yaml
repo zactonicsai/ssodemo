@@ -18,6 +18,11 @@ stringData:
       "loginWithEmailAllowed": true,
       "bruteForceProtected": true,
       "roles": { "realm": [ { "name": "web-user", "description": "May use the web apps behind the gateway" } ] },
+      "groups": [
+        {{- range $i, $g := $kc.realm.groups }}{{ if $i }},{{ end }}
+        { "name": {{ $g | quote }}, "path": "/{{ $g }}" }
+        {{- end }}
+      ],
       "users": [
         {
           "username": {{ $kc.realm.user.username | quote }},
@@ -27,8 +32,22 @@ stringData:
           "firstName": {{ $kc.realm.user.firstName | quote }},
           "lastName": {{ $kc.realm.user.lastName | quote }},
           "credentials": [ { "type": "password", "value": {{ $kc.realm.user.password | quote }}, "temporary": false } ],
-          "realmRoles": [ "web-user", "default-roles-{{ $kc.realm.name }}" ]
+          "realmRoles": [ "web-user", "default-roles-{{ $kc.realm.name }}" ],
+          "groups": [ {{- range $i, $g := $kc.realm.groups }}{{ if $i }}, {{ end }}"/{{ $g }}"{{ end }} ]
         }
+        {{- range $kc.realm.extraUsers }},
+        {
+          "username": {{ .username | quote }},
+          "enabled": true,
+          "email": {{ .email | quote }},
+          "emailVerified": true,
+          "firstName": {{ default "" .firstName | quote }},
+          "lastName": {{ default "" .lastName | quote }},
+          "credentials": [ { "type": "password", "value": {{ .password | quote }}, "temporary": false } ],
+          "realmRoles": [ "web-user", "default-roles-{{ $kc.realm.name }}" ],
+          "groups": [ {{- range $i, $g := .groups }}{{ if $i }}, {{ end }}"/{{ $g }}"{{ end }} ]
+        }
+        {{- end }}
       ],
       "clients": [
         {
@@ -50,6 +69,10 @@ stringData:
             {
               "name": "realm roles", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper",
               "config": { "claim.name": "roles", "jsonType.label": "String", "multivalued": "true", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true" }
+            },
+            {
+              "name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
+              "config": { "claim.name": "groups", "full.path": "false", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true" }
             }
           ]
         },
@@ -72,7 +95,9 @@ stringData:
             { "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper",
               "config": { "user.attribute": "email", "attribute.name": "email", "attribute.nameformat": "Basic", "friendly.name": "email" } },
             { "name": "roles", "protocol": "saml", "protocolMapper": "saml-role-list-mapper",
-              "config": { "attribute.name": "Role", "attribute.nameformat": "Basic", "single": "true" } }
+              "config": { "attribute.name": "Role", "attribute.nameformat": "Basic", "single": "true" } },
+            { "name": "groups", "protocol": "saml", "protocolMapper": "saml-group-membership-mapper",
+              "config": { "attribute.name": "groups", "attribute.nameformat": "Basic", "single": "true", "full.path": "false" } }
           ]
         }
       ]
