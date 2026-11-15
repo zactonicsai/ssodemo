@@ -69,9 +69,12 @@ web:
     requests: { cpu: 10m, memory: 16Mi }
     limits:   { cpu: 200m, memory: 64Mi }
 
-# ---- mesh policies -------------------------------------------------------------------------------------------
+# ---- access control / mesh policies ---------------------------------------------------------------------------
 mesh:
-  mtlsStrict: true                    # PeerAuthentication STRICT for web + oauth2-proxy + keycloak
+  networkPolicy: true                 # NetworkPolicy: web reachable only from oauth2-proxy pods (needs no Istio CRDs)
+  # The following need the Istio CRDs (networking.istio.io / security.istio.io). They are rendered only when the
+  # cluster has them — the Azure-managed Gateway-API-only Istio does not, the classic add-on and self-managed do.
+  mtlsStrict: true                    # PeerAuthentication STRICT for web + oauth2-proxy
   lockdownWeb: true                   # AuthorizationPolicy: web pods accept HTTP only from oauth2-proxy's identity
   virtualService:                     # mesh-side VirtualService + DestinationRule for the web service
     enabled: true

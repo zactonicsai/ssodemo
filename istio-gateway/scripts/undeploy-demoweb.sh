@@ -2,9 +2,10 @@
 # Remove the SSO demo (and optionally the gateway) from namespace demoweb on the current context.
 #   scripts/undeploy-demoweb.sh            removes keycloak / oauth2-proxy / web / routes / policies
 #   scripts/undeploy-demoweb.sh --all      also the gateway release and the namespace
+# defaults must be set BEFORE lib.sh (which defaults RELEASE to istio-ingress)
+NAMESPACE="${NAMESPACE:-demoweb}"; RELEASE="${RELEASE:-demoweb}"; GW_RELEASE="${GW_RELEASE:-demoweb-gateway}"
 source "$(dirname "$0")/lib.sh"
 need kubectl helm
-NAMESPACE="${NAMESPACE:-demoweb}"; RELEASE="${RELEASE:-demoweb}"; GW_RELEASE="${GW_RELEASE:-demoweb-gateway}"
 confirm_context
 info "uninstalling $RELEASE"
 helm -n "$NAMESPACE" uninstall "$RELEASE" 2>/dev/null && ok removed || warn "release $RELEASE not found"

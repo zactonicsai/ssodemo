@@ -16,9 +16,10 @@
 #   PUBLIC_URL=           override completely (e.g. https://sso.example.com when you front it with your own DNS/TLS)
 #   VALUES_FILE=          extra values for helm/demoweb-sso (users, apps, images, …)
 #   SECRETS_FILE=.demoweb/<context>.env   where generated secrets are kept so upgrades don't rotate them
+# defaults must be set BEFORE lib.sh (which defaults RELEASE to istio-ingress)
+NAMESPACE="${NAMESPACE:-demoweb}"; RELEASE="${RELEASE:-demoweb}"; GW_RELEASE="${GW_RELEASE:-demoweb-gateway}"
 source "$(dirname "$0")/lib.sh"
 
-NAMESPACE="${NAMESPACE:-demoweb}"; RELEASE="${RELEASE:-demoweb}"; GW_RELEASE="${GW_RELEASE:-demoweb-gateway}"
 DNS_LABEL="${DNS_LABEL:-}"; PUBLIC_URL="${PUBLIC_URL:-}"
 SKIP_GW=0; GW_ARGS=(); EXTRA_SET=()
 while [ $# -gt 0 ]; do case "$1" in
@@ -93,7 +94,13 @@ run helm lint "$ROOT/helm/demoweb-sso" ${SET[@]+"${SET[@]}"} >/dev/null && ok "c
 run helm upgrade --install "$RELEASE" "$ROOT/helm/demoweb-sso" -n "$NAMESPACE" ${SET[@]+"${SET[@]}"} --wait --timeout 10m
 for d in keycloak oauth2-proxy web; do run kubectl -n "$NAMESPACE" rollout status "deploy/$d" --timeout=300s; done
 C="$(kubectl -n "$NAMESPACE" get pod -l app=web -o jsonpath='{.items[0].spec.containers[*].name}')"
-case "$C" in *istio-proxy*) ok "web pods have sidecars ($C)" ;; *) warn "web pods have NO sidecar ($C): mTLS/AuthorizationPolicy lockdown is not in effect" ;; esac
+if kubectl api-resources --api-group=security.istio.io 2>/dev/null | grep -q AuthorizationPolicy; then
+  case "$C" in *istio-proxy*) ok "Istio CRDs present and web pods have sidecars ($C): mTLS + AuthorizationPolicy lockdown active" ;;
+    *) warn "Istio CRDs present but web pods have NO sidecar ($C): injection webhook missing? lockdown relies on NetworkPolicy" ;; esac
+else
+  warn "this Istio has no networking/security.istio.io CRDs (Gateway-API-only managed Istio): VirtualService/AuthorizationPolicy skipped;"
+  warn "web lockdown is a NetworkPolicy — enforced only if the cluster has a network-policy engine: az aks show -g <rg> -n <name> --query networkProfile.networkPolicy"
+fi
 
 # ---- summary --------------------------------------------------------------------------------------
 VALS="$(helm -n "$NAMESPACE" get values "$RELEASE" -a -o json)"

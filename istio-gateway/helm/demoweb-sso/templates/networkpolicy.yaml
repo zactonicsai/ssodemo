@@ -1,0 +1,42 @@
+{{- if .Values.mesh.networkPolicy }}
+# Lockdown that does not depend on Istio CRDs: only oauth2-proxy pods (and the kubelet, for probes) may open
+# connections to the web pods. Enforced when the cluster has a network-policy engine (AKS: Azure NPM / Cilium /
+# Calico — `az aks show --query networkProfile.networkPolicy`); otherwise it is accepted but inert.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-only-from-oauth2-proxy
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: web }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: oauth2-proxy }
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# Keycloak: reachable from the gateway pods, oauth2-proxy and the post-install job; nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-ingress
+  labels:
+    {{- include "sso.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app: keycloak }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: oauth2-proxy } }
+        - podSelector: { matchLabels: { app: keycloak-post-install } }
+        - podSelector: { matchLabels: { gateway.networking.k8s.io/gateway-name: {{ include "sso.gwName" . }} } }
+        - podSelector: { matchLabels: { istio: ingressgateway } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: aks-istio-ingress } }
+      ports:
+        - { port: 8080, protocol: TCP }
+{{- end }}

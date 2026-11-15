@@ -1,5 +1,9 @@
 {{- $m := .Values.mesh }}
-{{- if $m.mtlsStrict }}
+{{- /* The Azure-managed Istio may be Gateway-API-only (no networking/security.istio.io CRDs). Render Istio
+       policies only when the API server has them; otherwise networkpolicy.yaml provides the lockdown. */}}
+{{- $hasSec := .Capabilities.APIVersions.Has "security.istio.io/v1/PeerAuthentication" }}
+{{- $hasNet := .Capabilities.APIVersions.Has "networking.istio.io/v1/VirtualService" }}
+{{- if and $m.mtlsStrict $hasSec }}
 # web and oauth2-proxy only accept mTLS from the mesh: nothing can reach them without an Istio identity.
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
@@ -35,7 +39,7 @@ spec:
   mtls: { mode: PERMISSIVE }     # the post-install kcadm Job runs without a sidecar; mesh callers still use mTLS
 ---
 {{- end }}
-{{- if $m.lockdownWeb }}
+{{- if and $m.lockdownWeb $hasSec }}
 # Pod access control: the web pods answer HTTP only to oauth2-proxy's identity (so nobody in the cluster or at
 # the gateway can bypass the login by calling the Service directly). Health checks come from the kubelet and
 # bypass the sidecar, so they are unaffected.
@@ -55,7 +59,7 @@ spec:
             principals: ["cluster.local/ns/{{ .Release.Namespace }}/sa/oauth2-proxy"]
 ---
 {{- end }}
-{{- if $m.virtualService.enabled }}
+{{- if and $m.virtualService.enabled $hasNet }}
 # Mesh-side traffic control for the web service (what oauth2-proxy → web traffic obeys): timeouts, retries,
 # mTLS, and a hook for canaries (add a v2 subset and shift weight).
 apiVersion: networking.istio.io/v1

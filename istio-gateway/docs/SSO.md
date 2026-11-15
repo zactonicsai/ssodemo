@@ -87,6 +87,20 @@ service providers (Jenkins, GitLab, Grafana, Tableau, ...):
   do its own SAML dance against Keycloak — the user already has a Keycloak session from the OIDC login, so it is
   still single sign-on.
 
+## Istio APIs vs. Gateway-API-only managed Istio
+
+Some Azure-managed Istio installs (istiod in `aks-istio-system` with GatewayClass `approuting-istio`) ship **no
+`networking.istio.io` / `security.istio.io` CRDs** — only the Kubernetes Gateway API. The chart checks the API server
+(`.Capabilities.APIVersions.Has`) and:
+
+| Cluster | Routes | Pod access control | Traffic control |
+|---|---|---|---|
+| Gateway-API-only managed Istio | `HTTPRoute` | `NetworkPolicy` (web ← oauth2-proxy only; needs a network-policy engine: `az aks show … --query networkProfile.networkPolicy`, enable with `az aks update --network-policy azure` / cilium) | `HTTPRoute` filters/timeouts; no VirtualService |
+| Classic add-on / self-managed Istio (CRDs present) | `HTTPRoute` or `VirtualService` | `NetworkPolicy` **and** `PeerAuthentication` STRICT + `AuthorizationPolicy` (identity-based, needs sidecars) | `VirtualService` + `DestinationRule` (timeouts, retries, outlier detection, subsets/canary) |
+
+In both cases the login is enforced for everything coming through the gateway; the difference is only how much
+in-cluster traffic to the web pods is restricted. `scripts/test-sso.sh` step 4 tells you which you have.
+
 ## Why these settings
 
 * **Keycloak over plain HTTP on an IP**: `--hostname=http://<IP>/auth --hostname-strict=false --proxy-headers=xforwarded`
